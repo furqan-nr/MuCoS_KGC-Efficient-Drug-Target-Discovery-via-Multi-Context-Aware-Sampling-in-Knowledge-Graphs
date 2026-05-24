@@ -1,106 +1,118 @@
+import json
+import os
+import time
+
 import torch
-import numpy as np
 from torch.utils.data import DataLoader
 from transformers import AdamW
-from dataset_tail import KGDataset, get_one_hop_head_entity_neighbors
-from utils_tail import save_test_results, save_checkpoint, load_checkpoint
+import config_tail
 
-def evaluate_model(model, dataloader, device, entity_to_idx, test_triplets, tokenizer):
-    """Evaluate the model on test set and compute metrics."""
-    model.eval()
-    rankings = []
-    labels = []
+from dataset_tail import TailContextDataset
+from evaluate_tail import evaluate_model
+from utils_tail import load_json, save_json, save_checkpoint
 
-    with torch.no_grad():
-        for idx, batch in enumerate(dataloader):
-            row = test_triplets.iloc[idx]
-            head, relation, true_tail = row['head'], row['relation'], row['tail']
-
-            head_neighbors = get_one_hop_head_entity_neighbors(head, test_triplets)  # Note: using test_triplets for neighbor extraction
-            head_neighbors_str = " ".join(head_neighbors)
-
-            inputs = tokenizer(
-                f"{head} [SEP] {head_neighbors_str} [SEP] {relation}",
-                return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=128
-            )
-            inputs = {key: val.squeeze(0).unsqueeze(0).to(device) for key, val in inputs.items()}
-            outputs = model(**inputs)
-            logits = outputs.logits.squeeze().cpu().numpy()
-            scores = np.exp(logits) / np.sum(np.exp(logits))  # softmax to get probabilities
-            rankings.append(scores)
-            labels.append(entity_to_idx[true_tail])
-
-    rankings = np.array(rankings)
-    labels = np.array(labels)
-
-    # Calculate MRR and Hits@k
-    mrr = np.mean([1.0 / (np.argsort(scores)[::-1].tolist().index(label) + 1) for scores, label in zip(rankings, labels)])
-    hits_at_1 = np.mean([label in np.argsort(scores)[::-1][:1] for scores, label in zip(rankings, labels)])
-    hits_at_3 = np.mean([label in np.argsort(scores)[::-1][:3] for scores, label in zip(rankings, labels)])
-    hits_at_5 = np.mean([label in np.argsort(scores)[::-1][:5] for scores, label in zip(rankings, labels)])
-    hits_at_10 = np.mean([label in np.argsort(scores)[::-1][:10] for scores, label in zip(rankings, labels)])
-
-    return {
-        'MRR': mrr,
-        'Hits@1': hits_at_1,
-        'Hits@3': hits_at_3,
-        'Hits@5': hits_at_5,
-        'Hits@10': hits_at_10
-    }
 
 def train_and_evaluate(
     model_name,
     tokenizer_class,
     model_class,
-    save_path,
+    processed_dir,
+    output_dir,
     num_epochs,
-    train_triplets,
-    valid_triplets,
-    test_triplets,
-    all_triplets,
-    entity_to_idx,
     batch_size=16,
     learning_rate=5e-5,
     max_length=128,
-    max_degree_head=15,
-    max_degree_relation=5,
-    device='cpu'
+    device="cpu",
 ):
-    """Train and evaluate the model."""
-    # Load tokenizer and model
     tokenizer = tokenizer_class.from_pretrained(model_name)
-    model = model_class.from_pretrained(model_name, num_labels=len(entity_to_idx))
+
+    tail_labels = load_json(os.path.join(processed_dir, "tail_label_vocab.json"))
+    num_labels = len(tail_labels)
+
+    model = model_class.from_pretrained(model_name, num_labels=num_labels)
     model.to(device)
 
-    # Prepare Datasets and DataLoaders
-    train_dataset = KGDataset(train_triplets, tokenizer, entity_to_idx, all_triplets,
-                              max_degree_head, max_degree_relation)
-    valid_dataset = KGDataset(valid_triplets, tokenizer, entity_to_idx, all_triplets,
-                              max_degree_head, max_degree_relation)
-    test_dataset = KGDataset(test_triplets, tokenizer, entity_to_idx, all_triplets,
-                             max_degree_head, max_degree_relation)
+    train_dataset = TailContextDataset(
+        os.path.join(processed_dir, "train_context.jsonl"),
+        tokenizer,
+        max_length=max_length,
+    )
+    valid_dataset = TailContextDataset(
+        os.path.join(processed_dir, "valid_context.jsonl"),
+        tokenizer,
+        max_length=max_length,
+    )
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    # Deterministic DataLoader setup
+    gen = torch.Generator()
+    gen.manual_seed(config_tail.SEED)
 
-    # Optimizer
+    def worker_init_fn(worker_id):
+        import random
+        import numpy as _np
+        import torch as _torch
+
+        seed = config_tail.SEED + worker_id
+        random.seed(seed)
+        _np.random.seed(seed)
+        _torch.manual_seed(seed)
+
+    # Auto-tune `num_workers` based on dataset size for balanced throughput
+    dataset_size = len(train_dataset)
+    cpu_count = os.cpu_count() or 1
+    # Small datasets don't benefit from workers; medium/large do
+    if dataset_size < 2000:
+        num_workers = 0
+    else:
+        # one worker per ~2000 samples, capped by CPU count and an upper limit
+        num_workers = min(max(1, dataset_size // 2000), cpu_count, 8)
+
+    pin_memory = True if torch.cuda.is_available() else False
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        generator=gen,
+        worker_init_fn=worker_init_fn,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
+    valid_dataloader = DataLoader(
+        valid_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        generator=torch.Generator().manual_seed(config_tail.SEED),
+        worker_init_fn=worker_init_fn,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
     optimizer = AdamW(model.parameters(), lr=learning_rate)
 
-    # Load checkpoint if exists
-    checkpoint_path = os.path.join(save_path, 'checkpoint.pth')
-    start_epoch = load_checkpoint(model, optimizer, checkpoint_path)
-    print(f"Resuming from epoch {start_epoch + 1}" if start_epoch > 0 else "Starting from scratch")
+    checkpoints_dir = os.path.join(output_dir, "checkpoints")
+    best_model_dir = os.path.join(output_dir, "best_model")
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    os.makedirs(best_model_dir, exist_ok=True)
 
-    model.train()
+    best_mrr = -1.0
+    validation_metrics_path = os.path.join(output_dir, "validation_metrics.jsonl")
 
-    for epoch in range(start_epoch, num_epochs):
+    speed_metrics = {
+        "train_time_per_epoch": [],
+        "valid_time_per_epoch": [],
+    }
+
+    total_train_time = 0.0
+    total_valid_time = 0.0
+
+    for epoch in range(num_epochs):
+        model.train()
+        start_train = time.perf_counter()
+
         train_loss = 0.0
-        for batch in train_dataloader:
-            inputs, labels = batch
+        for inputs, labels, _meta in train_dataloader:
             inputs = {key: val.to(device) for key, val in inputs.items()}
             labels = labels.to(device)
 
@@ -110,31 +122,61 @@ def train_and_evaluate(
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
-        avg_train_loss = train_loss / len(train_dataloader)
 
-        # Validation
+        epoch_train_time = time.perf_counter() - start_train
+        total_train_time += epoch_train_time
+        speed_metrics["train_time_per_epoch"].append(epoch_train_time)
+
         model.eval()
-        valid_loss = 0.0
-        with torch.no_grad():
-            for batch in valid_dataloader:
-                inputs, labels = batch
-                inputs = {key: val.to(device) for key, val in inputs.items()}
-                labels = labels.to(device)
+        start_valid = time.perf_counter()
+        valid_metrics = evaluate_model(
+            model,
+            valid_dataloader,
+            device,
+            tail_labels,
+            save_dir=None,
+            split_name="valid",
+        )
+        epoch_valid_time = time.perf_counter() - start_valid
+        total_valid_time += epoch_valid_time
+        speed_metrics["valid_time_per_epoch"].append(epoch_valid_time)
 
-                outputs = model(**inputs, labels=labels)
-                loss = outputs.loss
-                valid_loss += loss.item()
-        avg_valid_loss = valid_loss / len(valid_dataloader)
+        avg_train_loss = train_loss / max(len(train_dataloader), 1)
 
-        print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, Validation Loss: {avg_valid_loss:.4f}")
+        log_record = {
+            "epoch": epoch + 1,
+            "train_loss": avg_train_loss,
+            "valid_metrics": valid_metrics,
+        }
 
-        # Evaluate on test set
-        test_results = evaluate_model(model, test_dataloader, device, entity_to_idx, test_triplets, tokenizer)
-        save_test_results(epoch + 1, test_results, save_path)
+        with open(validation_metrics_path, "a", encoding="utf-8") as file:
+            file.write(json.dumps(log_record) + "\n")
 
-        # Save checkpoint after each epoch
+        if valid_metrics["MRR"] > best_mrr:
+            best_mrr = valid_metrics["MRR"]
+            model.save_pretrained(best_model_dir)
+            tokenizer.save_pretrained(best_model_dir)
+
+        checkpoint_path = os.path.join(checkpoints_dir, f"checkpoint_epoch_{epoch + 1}.pth")
         save_checkpoint(model, optimizer, epoch + 1, checkpoint_path)
 
-    # Save final model and tokenizer
-    model.save_pretrained(save_path)
-    tokenizer.save_pretrained(save_path)
+    speed_metrics.update(
+        {
+            "total_training_time": total_train_time,
+            "total_validation_time": total_valid_time,
+            "train_triples_per_second": len(train_dataset) / total_train_time
+            if total_train_time
+            else 0.0,
+            "valid_triples_per_second": len(valid_dataset) / total_valid_time
+            if total_valid_time
+            else 0.0,
+        }
+    )
+
+    save_json(os.path.join(output_dir, "run_config.json"), {"best_valid_mrr": best_mrr})
+
+    return {
+        "best_model_dir": best_model_dir,
+        "speed_metrics": speed_metrics,
+        "tail_labels": tail_labels,
+    }

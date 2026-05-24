@@ -103,6 +103,29 @@ Before running training, review and adjust the settings in:
 relation_prediction/config.py
 ```
 
+### Tail Prediction (Reproducible)
+
+The reproducible tail-prediction pipeline precomputes contexts and trains once, selecting the best checkpoint by validation MRR.
+
+1. Place data files in a folder such as `data/` or set environment variables:
+
+```bash
+set MUCOS_DATA_DIR=path\to\data
+```
+
+2. Run the tail-prediction pipeline:
+
+```bash
+python Tail_Prediction/main_tail.py
+```
+
+Outputs are written to `processed/` and `outputs/` by default. You can override them with:
+
+```bash
+set MUCOS_PROCESSED_DIR=path\to\processed
+set MUCOS_OUTPUT_DIR=path\to\outputs
+```
+
 #### Typical parameters to configure include:  
 - dataset path
 - pretrained language model

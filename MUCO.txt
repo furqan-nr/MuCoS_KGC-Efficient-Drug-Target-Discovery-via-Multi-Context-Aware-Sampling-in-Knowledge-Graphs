@@ -1,0 +1,537 @@
+MuCo-KGC: Multi-Context-Aware Knowledge
+Graph Completion
+Haji Gul1a, Abdul Ghani Naim1b, and Ajaz Ahmad Bhat1c
+1School of Digital Science, Universiti Brunei Darussalam, Jalan Tungku Link,
+Gadong BE1410, Brunei Darussalam
+(a23h1710,bghani.naim,cajaz.bhat)@ubd.edu.bn
+Abstract. Knowledge Graph Completion (KGC) seeks to predict miss-
+ing entities (e.g., heads or tails) or relationships in knowledge graphs
+(KGs), which often contain incomplete data. Traditional embedding-
+based methods, such as TransE and ComplEx, have improved tail en-
+tity prediction but struggle to generalize to unseen entities during test-
+ing. Textual-based models mitigate this issue by leveraging additional
+semantic context; however, their reliance on negative triplet sampling
+introduces high computational overhead, semantic inconsistencies, and
+data imbalance. Recent approaches, like KG-BERT, show promise but
+depend heavily on entity descriptions, which are often unavailable in
+KGs. Critically, existing methods overlook valuable structural informa-
+tion in the KG related to the entities and relationships. To address these
+challenges, we propose Multi-Context-Aware Knowledge Graph Comple-
+tion (MuCo-KGC), a novel model that utilizes contextual information
+from linked entities and relations within the graph to predict tail en-
+tities. MuCo-KGC eliminates the need for entity descriptions and neg-
+ative triplet sampling, significantly reducing computational complexity
+while enhancing performance. Our experiments on standard datasets,
+including FB15k-237, WN18RR, CoDEx-S, and CoDEx-M, demonstrate
+thatMuCo-KGCoutperformsstate-of-the-artmethodsonthreedatasets.
+Notably, MuCo-KGC improves MRR on WN18RR, and CoDEx-S and
+CoDEx-Mdatasetsby 1.63%,and 3.77%and20.15%respectively,demon-
+strating its effectiveness for KGC tasks.
+Keywords: Knowledge Graphs ·Knowledge Graph Completion ·Tail
+entity prediction ·Link prediction
+1 Introduction
+Knowledge Graphs (KGs) are structured representations of information about
+entities Eand relationships R, expressed as triplets T, each triplet consisting
+of a head, a relationship, and a tail (h, r, t )[1]. Integrated with deep learning
+and big data, KGs are increasingly being utilized in intelligent systems for tasks
+like question-answering, recommendation, and natural language processing [2,3].
+0Accepted in PAKDD DSFA Special SessionarXiv:2503.03091v2  [cs.CL]  10 Mar 2025
+2 H. Gul et al.
+KGs, despite their effectiveness, are often incomplete, missing data in the form
+of entities (heads and tails) or relationships between the entities, which limits
+their potential, as gaps in knowledge reduce the performance of downstream
+applications [2]. To address this, the Knowledge Graph Completion (KGC) or
+Link Prediction problem aims at predicting these missing entities Eand their
+interrelationships, Rthereby enhancing KG density [4]. In this work, we specifi-
+cally focus on tail entity prediction, which involves inferring the missing tails in
+incomplete triplets[5]. Tail prediction is generally more challenging than relation
+prediction due to the higher diversity and volume of unique entities compared
+to relationships set in most KGs.
+KGC methods fall into three main categories: embedding-based, text-based,
+and LLM-based approaches. Embedding-based methods, such as DistMult [5],
+represent entities and relations as low-dimensional vectors but fail with unseen
+entities or relations during testing [2]. These models also use fixed represen-
+tations, ignoring context-specific variations [4]. Text-based models, like StAR
+[6] and KG-BERT [4], incorporate neighborhood and semantic information, im-
+proving predictions. However, they face scalability challenges, rely on expensive
+techniques like random walks, and often require entity descriptions, which are
+unavailable in many KGs. LLM-based approaches improve predictions through
+tailored prompting [7], while recent works like DIFT [8] fine-tune generative
+LLMs, e.g., LLaMA-2 after combining these with embedding models. Despite
+these advances, LLM-based methods struggle to efficiently integrate large-scale
+KG facts, are domain-limited, and incur high computational costs.
+These challenges underscore the necessity for a scalable, description inde-
+pendent KGC framework that fully exploits KG structural properties and con-
+textual information to enhance performance across diverse datasets. To address
+these gaps, we present Multi-Context-Aware KGC (MuCo-KGC) , a novel
+approach that extracts and integrates contextual information about entitiesand
+relationships associated with the head entity and query relation. This context
+is incorporated into a BERT-based architecture to improve tail entity predic-
+tion. Comprehensive experiments on multiple benchmark datasets demonstrate
+thatMuCo-KGCachievesstate-of-the-artperformanceinMeanReciprocalRank
+(MRR) and Hit@K metrics (specifically for k= 1,3). To summarize, this study
+delivers the following key contributions to KGC domain:
+– Contextualized Tail Prediction : We propose MuCo-KGC, which lever-
+ages head entity and relationship contexts—structural KG features over-
+looked by prior models—to significantly improve predictive performance.
+– Description-Independence : Unlike prior approaches, MuCo-KGC does
+not require entity descriptions, making it applicable to KG’s with sparse or
+missing metadata.
+– Negative Sample-Free Training : By utilizing cross-entropy loss, MuCo-
+KGCeliminatestheneedfornegativesampling,improvingtrainingefficiency
+and robustness.
+– EmpiricalValidation :Extensiveexperimentsonvariousbenchmarkdatasets
+demonstrate that MuCo-KGC reliably excels in tail entity prediction.
+MuCo-KGC: Multi-Context-Aware Knowledge Graph Completion 3
+2 Related Work
+The existing literature provides multiple KGC methods that can be broadly
+classified into two that have gained considerable attention. Knowledge Graph
+Embedding (KGE) and Language Model-Based Approaches.
+KGE capture a graph’s underlying semantics by representing entities and re-
+lationships as continuous vectors. These can further categorize into translation
+distance-based methods and semantic or textual matching-based methods. The
+first group includes TransE[9], RotatE [10], and others approaches [11], which
+train a scoring function to measure the distance between entities, modeling in-
+teractions as translation operations. In contrast, semantic or textual matching
+methods, such as DistMult [5], rely on scoring functions that compute the simi-
+larity between entities and relationships. These methods identify the most likely
+tail entity during testing by evaluating scores across all entities that share a
+specific head and relationship.
+Translation-based methods leverage relationships to facilitate transforma-
+tions between entities (h, t), enabling triplet scoring. TransE, a foundational
+modelinthiscategory,embedsentitiesandrelationshipsinashared d-dimensional
+vector space and computes triplet scores using fTransE (h, r, t ) =−||h+r−t||,
+where h,r, and t∈Rd[9]. It assumes h+r∼=t, effectively modeling simple
+relational patterns but failing with complex relationships such as 1−N,N−1,
+andN−Nmappings. RotatE addresses this limitation by embedding entities
+and relationships in a complex vector space Cdand employing rotational trans-
+formations, defined as fRotatE (h, r, t ) =−||h◦r−t||[10]. Extending this, HAKE
+adopts a polar coordinate system to capture semantic hierarchies, improving its
+ability to model hierarchical relations [12]. In contrast, semantic-based meth-
+ods like DistMult [5] utilize matrix-based operations to measure entity-relation
+similarity. The scoring function fDistMult (h, r, t ) =h⊤diag(r)t, with h,r, and
+t∈Rd, excels at modeling compositional semantics. However, its symmetric na-
+ture limits its ability to handle asymmetric relationships, reducing its accuracy
+in predicting missing knowledge graph information [12].
+Recent studies have explored text-based models for KGC, with KG-BERT
+[4] being a pioneering approach. KG-BERT models knowledge graph triplets as
+ordered sequences and employs a binary cross-entropy loss to classify their va-
+lidity. While effective in triplet classification, it under-performs in some ranking
+metrics, especially on Hits@1 and Hits@3, compared to state-of-the-art methods.
+Building on this, MEM-KGC [21] adopts a masked language model approach,
+masking the tail entity in a triplet and predicting it using relational and textual
+descriptions. Although MEM-KGC achieves notable performance gains, its de-
+pendence on textual descriptions limits its applicability to KGs with sparse or
+absent entity descriptions. These text-based models, despite their advancements,
+struggle to generalize effectively across diverse knowledge graph datasets that
+lack comprehensive descriptive metadata.
+Recent hybrid methods seek to combine the strengths of large language mod-
+els (LLMs), prompt engineering [13] and traditional KGE techniques. For exam-
+ple, Pretrain-KGC [7] integrates LLMs with classical models like TransE and
+4 H. Gul et al.
+RotatE by initializing embeddings in a shared vector space, subsequently re-
+fining them through iterative optimization to improve loss detection. Similarly,
+DIFT [8] employs fine-tuned LLaMA-2-7B models augmented with a knowledge
+adaptation module, enabling enhanced reasoning over KG-specific domains. De-
+spite achieving state-of-the-art results, DIFT’s dependence on computationally
+intensive LLMs like LLaMA-2-7B limits its practicality in resource-constrained
+settings.
+To summarize, existing KGC methodologies exhibit notable limitations. Em-
+bedding based models, such as TransE and RotatE, fail to generalize to unseen
+entities and relations due to their dependence on pre-defined embeddings, limit-
+ing adaptability to new knowledge graph structures. Text-based and LLM-based
+approaches, including KG-BERT and MEM-KGC, heavily depend on descrip-
+tive entity information, which is often sparse or inconsistent across datasets.
+Many embedding methods as well as some text-based methods like SimKGC
+[14] rely on extensive negative sampling during training, leading to high compu-
+tational costs, especially on large datasets. Furthermore, LLM-based methods
+like KICGPT and DIFT introduce additional complexity through prompt en-
+gineering and fine-tuning, further increasing their computational and resource
+demands.
+AcriticallimitationofexistingKGCmethodsistheirinsufficientexploitation
+of the structural properties of KG’s. Many approaches overlook the rich contex-
+tual information embedded in the graph’s structure, such as neighboring entities
+and relationships tied to a given head entity and query relation. Key struc-
+tural components that can provide valuable context include head context-entities
+(neighboring entities), head context-relations (neighboring relations), and the re-
+lationship context (information specific to the query relation).
+The proposed MuCo-KGC model addresses this gap by integrating these
+three structural dimensions to construct a comprehensive context. By leveraging
+neighboring entity information, surrounding relational details, and relationship-
+specific context, MuCo-KGC captures a deeper understanding of the graph’s
+topology. This integration of textual and structural information represents a
+significant advancement over existing methods, enabling improved prediction
+accuracy and enhanced generalization. The following section details the design
+and implementation of the MuCo-KGC model.
+3 Methodology
+This section describes the MuCo-KGC technique, which predicts tail entities
+givenaheadentityandarelationshipfromaknowledgegraph.Beforeillustrating
+the model, a brief description of the problem is provided.
+Problem Statement : Consider a knowledge graph G(E, R, T )as a collec-
+tion of triplets T, where each triplet is given as (h, r, t ). Here, h∈Eis the head
+entity, t∈Eis the tail entity, and r∈Rrepresents the relationship between
+them. Given an incomplete triple (h , r , ?), MuCo-KGC model predicts the
+missing tail t(represented by ? in the incomplete triple).
+MuCo-KGC: Multi-Context-Aware Knowledge Graph Completion 5
+Fig.1: A concise overview of the MuCo-KGC model pipeline for predicting the tail
+entity, given a head entity hand a relationship r. The box on the left illustrates the
+calculation of head context Hc.Hcis formed as a union of R(h)andE(h). Here, R(h)
+is the set of all relations ( r1,r2,r3andr4) involving the head entity h, while E(h)is
+the set of all neighboring entities ( e2,e3,e4, and e5) directly related to h. The box on
+the right shows the calculation of relationship context Rc.Rccomprises the set of all
+entities ( e3,e7,e2, and e6) associated via relationship r. These contextual features —
+HcandRc— alongside handrare then fed as input to the BERT model as depicted
+in the middle of the figure. The BERT model, combined with a linear classifier and
+softmax, generates probabilities for tail entities.
+To achieve accurate tail prediction, the proposed MuCo-KGC method ex-
+tracts contextual information from the knowledge graph surrounding the head
+entity and the relationship in question, and leverages this context within a
+BERT model to learn and generate precise predictions. Figure 1 provides a detail
+overview of the MuCo-KGC model. Given a head hand a relationship r, our
+model predicts the tail entity t, in the following steps:
+Extract Head Context Hc: To extract the contextual information for the
+head, i.e. Hc, we first identify the relationships rthat are associated with the
+head entity h, i.e., the relations neighborhood R(h). Ifkrelationships are as-
+sociated with the head hfrom the set Rof all relationships riin the graph G,
+then:
+R(h) =Ak
+i=1({ri|(h, ri, ej)∈T, ej∈E}) (1)
+where A(·)is some aggregator function (in our case, it is the concatenation
+operation ∥),Tis the set of training triplets, Eis the set of all entities and ri
+represents each relation associated with h.
+Next, we find the entities ethat are neighbors (i.e., have a direct connec-
+tion) with the head entity h, i.e., entity neighborhood E(h)using the identified
+relationships in R(h). Assuming mneighbor entities, E(h)is expressed as:
+E(h) =Am
+i=1({ei|(h, rj, ei)∈T, rj∈R}) (2)
+where Ris the set of all relations and eirepresents each entity directly associ-
+ated with hThe head context Hcis then calculated as the union of the connected
+6 H. Gul et al.
+relations R(h)and the neighbor entities E(h), as shown below in Equation 3.
+Hc= (R(h))∪(E(h)) (3)
+Conceptually, the head context Hcrepresents the entity-centric local knowl-
+edge. It pulls out:
+–Entities directly linked to the head entity E(h): This captures local neigh-
+borhood information, essentially providing a "snapshot" of the immediate
+surroundings of the head entity in the graph. This structural information
+helps the model identify how the head entity his positioned within its local
+neighborhood (e.g., is it a hub, part of a chain, etc.).
+–Relations associated with these neighboring entities R(h): By including the
+relationships between the head entity and its neighbors, we bring in a se-
+mantic understanding of the types of relationships the entity his generally
+involved in.
+Therefore, the head context’s role is to provide specificity . By narrowing
+the focus to the immediate surroundings of the head entity h, it helps the model
+differentiate between plausible tail entities based on the specific neighborhood
+structure.
+Extract Relationship Context Rc: To acquire the relationship context
+Rc, we identify all the entities associated with the operational relationship r
+in the knowledge Graph G.Rcis given below, where ei, ejare entities in E
+connected by the relation r.
+Rc=Al
+i,j=1({ei, ej|(ei, r, ej)∈T}) (4)
+Conceptually,therelationcontext Rcrepresentsrelation-centricglobalknowl-
+edge. It pulls out all entities connected via the given relation r. Instead of focus-
+ing on the head entity’s neighborhood, this provides a global perspective on the
+nature of the relation ritself and the patterns or clusters involving the relation
+r. This helps the model learn global patterns about how this relation typically
+connects entities across the entire KG (e.g., relation capital_of connects coun-
+tries and cities). Relation context Rcalso provides the model with the knowledge
+of the distribution or variability of the manifestation of the relation rin the KG.
+This helps the model refine predictions by learning how the relation roperates
+beyond the local context of the head entity. In other words, the relation con-
+text’s role is to provide generalization . By considering global patterns of the
+relation,itactsasaregularizer,ensuringthatthemodelalignswithbroaderrela-
+tional constraints in the KG. Together, the head and relation contexts allow the
+model to leverage local specificity (head context) and ensure global consistency
+(relation context). This innovation solves the "description sparsity" problem in
+dealing with datasets without descriptions.
+Prepare Input Sequence for BERT Classifier : The contextual infor-
+mation extracted in the above steps forms the input to BERT. Specifically, the
+input sequence contains h, Hcfrom Equation 3, r, and Rcfrom Equation 4, as
+MuCo-KGC: Multi-Context-Aware Knowledge Graph Completion 7
+shown below where [CLS] is BERT’s classifier token and [SEP] is the separator
+token.
+Input Sequence = [CLS ]h, H c[SEP ]r, R c (5)
+Predict and train with BERT Classifier : A classification layer is added
+on top of the BERT model, which aims to classify all the entities from Entity set
+E. Once the BERT classifier receives the input, it processes it through various
+transformer layers, provides a contextualized representation of each token, and
+uses that to classify the input. The classifier model predicts the tail entity by
+employing a softmax function over the output pooled representation to calculate
+the probability for all the available tail entities. The input-output description of
+the model is given as:
+(BERT Output) =BERT(Input Sequence) (6)
+P(t|h, r) =softmax (W·BERT(Input Sequence) ) (7)
+where Wis a learnable weight matrix. Putting the above equations together,
+the MuCo-KGC model can be expressed as:
+MuCo-KGC (t|h, r) =softmax (W·BERT (h, Hc, r, R c)) (8)
+The MuCo-KGC model is trained using cross-entropy loss, which compares
+the probability distribution of the predicted label with the true label for the tail
+entity. The cross-entropy loss is given by:
+L=−NX
+i=1yilogP(ti|h, r)g (9)
+In this equation, the one-hot encoded true label for the tail object tiis indi-
+cated as yi. The predicted probability for the true tail entity could be denoted
+asP(ti|h, r), where his the head and ris the relation.
+Computational Complexity : The complexity of the three operations over the
+entire graph is as follows:
+Relational Neighborhood Aggregation (R(h)): For node h, the complexity
+isO(k), where kis the number of relations connected to h. Over all nodes,
+O P
+h∈Ekh
+=O(|T|), where |T|is the total number of triplets in the graph.
+Neighbor Entity Aggregation (E(h)): For a single node h, the complexity is
+O(m),where misthenumberofneighboringentities.Aggregatingoverallnodes,
+O P
+h∈Emh
+=O(|T|).
+Relation Context Aggregation (Rc(r)): For a single relation r, the complex-
+ity is O(l), where lis the number of triplets involving r. Across all relations,
+O P
+r∈Rlr
+=O(|T|).
+Therefore, the overall complexity for context calculation is O(3·|T|)stay-
+ing linear in |T|ensuring computational efficiency, even for large-scale graphs.
+Note that context is calculated once only at training. Consequently, our model
+time complexity at training is O(3·|T|)+O(|T|·|BERT |)and that at inference is
+8 H. Gul et al.
+onlyO(|T|·|BERT |), where |BERT |is the complexity of a BERT forward pass.
+This is efficient compared to similar state-of-the-art text-based BERT methods
+likeSimKGC[14]withtrainingandinferencecomplexitiesof O(2·N·|T|·|BERT |)
+andO(2· |T| · |BERT |)respectively at the least, where N≥3is the number of
+negative samples for each triple.
+4 Experiments
+Datasets: We evaluate the proposed MuCo-KGC model on four widely used
+knowledge graph (KG) datasets:
+– FB15k-237 [1]: An updated version of FB15k with inverse triplets removed
+to increase difficulty. It consists of 14,541 entities, 237 relations, 272,115
+training, 17,535 validation, and 20,466 test triplets.
+– WN18RR [3]: A subset of WN18, where reverse triplets are removed for in-
+creased complexity. The dataset includes 40,943 entities, 11 relations, 86,835
+training, 2,924 validation, and 2,824 test triplets.
+– CoDEx-S [15]: A multi-domain KG sourced from Wikidata, featuring 2,034
+entities,42relations,32,888training,3,654validation,and3,656testtriplets.
+– CoDEx-M [15]: A medium-sized version of CoDEx KG with 17,050 entities,
+51 relations, and 185,584 triples, designed for complex KGC tasks such as
+link prediction and triple classification.
+Hyperparameters: The experiments used a batch size of 16, a learning rate of
+5e-5, Adam optimizer, and cross-entropy loss. All experiments were conducted
+on an NVIDIA GeForce RTX 3090 GPU (24 GB memory). Training was stopped
+when evaluation metrics stabilized to three decimal places, typically within 30
+epochs.
+Evaluation: The proposed method and existing approaches are evaluated using
+standard KGC metrics, including MRR and Hits@k, defined in Equation 10:
+MRR =1
+NNX
+i=11
+rank i,Hits@k =1
+NNX
+i=11(rank i≤k) (10)
+where rank idenotes the rank of the correct entity in the sorted list of predicted
+scores for the i-th triplet, and 1(rank i≤k)equals 1 if the correct entity is among
+the top kpredictions, and 0 otherwise.
+4.1 Results
+The experimental results, presented in Tables 1 and 2, provide a compara-
+tive analysis of MuCo-KGC against state-of-the-art models across FB15k-237,
+WN18RR, CoDEx-S, and CoDEx-M datasets. Performance is evaluated using
+standard metrics: Mean Reciprocal Rank (MRR), Hits@1, Hits@3, and Hits@10.
+Performance on WN18RR and FB15k-237: MuCo-KGC achieves state-of-
+the-art performance on WN18RR in two metrics, attaining an MRR of 0.685,
+MuCo-KGC: Multi-Context-Aware Knowledge Graph Completion 9
+Table 1: Tail prediction results on FB15k-237 and WN18RR datasets. The best result
+for each metric is in boldface , and the second-best is underlined. Results marked with
+the#symbol are from [13], and those marked with the 2symbol are from [4].
+Dataset FB15k-237 WN18RR
+Methods MRR ↑Hits@1 ↑Hits@3 ↑Hits@10
+↑MRR ↑Hits@1 ↑Hits@3 ↑Hits@10
+↑
+Embedding-Based Methods
+RESCAL [11] # 0.356 0.266 0.390 0.535 0.467 0.439 0.478 0.516
+TransE [13] # 0.279 0.198 0.376 0.441 0.243 0.043 0.441 0.532
+TuckER [16] # 0.358 0.266 0.394 0.544 0.470 0.443 0.482 0.526
+ComplEx [17] # 0.247 0.158 0.275 0.428 0.440 0.410 0.460 0.510
+ConvE [18] 0.310 0.239 0.350 0.491 0.460 0.390 0.430 0.480
+DistMult [5] # 0.241 0.155 0.263 0.419 0.430 0.390 0.440 0.490
+RotatE [10] # 0.338 0.241 0.375 0.533 0.476 0.428 0.492 0.571
+CompGCN [19] # 0.355 0.264 0.390 0.535 0.479 0.443 0.494 0.546
+HittER [13] # 0.344 0.246 0.380 0.535 0.496 0.449 0.514 0.586
+HAKE [12] # 0.346 0.250 0.381 0.542 0.497 0.452 0.516 0.582
+BiQUE [20] 0.365 0.270 0.401 0.555 0.504 0.459 0.519 0.588
+Text-and Description-Based Methods
+Pretrain-KGE [7] # 0.332 - - - 0.235 - - -
+StAR [6] # 0.263 0.171 0.287 0.452 0.364 0.222 0.436 0.647
+MEM-KGC (w/o EP) [21] # 0.339 0.249 0.372 0.522 0.533 0.473 0.570 0.636
+MEM-KGC (w/ EP) [21] # 0.346 0.253 0.381 0.531 0.557 0.475 0.604 0.704
+SimKGC [14] # 0.333 0.246 0.363 0.510 0.671 0.585 0.731 0.817
+LLM-Based Methods
+ChatGPTzero-shot [2] 2 - 0.237 - - - 0.190 - -
+ChatGPTone-shot [2] 2 - 0.267 - - - 0.212 - -
+DIFT [8] 0.439 0.364 0.468 0.586 0.617 0.569 0.638 0.708
+KICGPT [13] 2 0.412 0.321 0.448 0.554 0.549 0.474 0.585 0.641
+GNN-Based Method
+NBFNet [22] 0.415 0.321 0.454 0.599 0.551 0.497 0.573 0.666
+NNKGC [23] # 0.338 0.252 0.365 0.515 0.674 0.596 0.722 0.812
+Proposed
+MuCo-KGC (H cOnly) 0.310 0.263 0.331 0.403 0.420 0.492 0.556 0.616
+MuCo-KGC (R cOnly) 0.280 0.187 0.255 0.271 0.321 0.345 0.371 0.398
+MuCo-KGC 0.350 0.322 0.399 0.462 0.685 0.637 0.687 0.737
+Table 2: Tail prediction results on the CoDEx-S and CoDEx-M datasets. The best
+result for each metric is in boldface , and the second-best is underlined. Results are
+taken from [28,24].
+Dataset CoDEx-S CoDEx-M
+Methods MRR ↑ Hits@1 ↑Hits@3 ↑Hits@10 MRR ↑ Hits@1 ↑Hits@3 ↑Hits@10
+RESCAL [11] 0.40 0.293 - 0.623 0.317 0.244 - 0.456
+TransE [13] 0.44 0.339 - 0.638 0.303 0.223 - 0.454
+TuckER [16] 0.44 0.339 - 0.638 .328 0.259 - 0.458
+OpenFact [24] 0.53 0.430 - 0.736 0.403 0.313 - 0.578
+HoLE-RorL [25] 0.40 0.292 - 0.639 0.326 0.246 - 0.475
+ComplEx [17] 0.46 0.370 - 0.646 0.337 0.262 - 0.476
+ConvE [18] 0.44 0.343 - 0.635 0.318 0.239 - 0.464
+RotL [27] 0.408 0.292 - 0.639 0.324 0.244 - 0.474
+CoPE [28] 0.446 0.350 - 0.631 0.326 0.251 - 0.466
+MuCo-KGC 0.55 0.423 0.647 0.764 0.478 0.392 0.523 0.600
+surpassing the previous best, NNKGC (MRR = 0.674), and leading in Hits@1
+(0.637).TheresultsonHits@3(0.687),andHits@10(0.737)arethird-best.These
+results underline its ability to capture intricate relational patterns. On FB15k-
+237, MuCo-KGC achieves competitive performance with an MRR of 0.350 and
+10 H. Gul et al.
+Hits@10of0.462,slightlybehindmethodslikeDIFTandNBFNet.Thisindicates
+potential for improvement in densely connected graphs.
+Performance on CoDEx-S and CoDEx-M: MuCo-KGC excels on both
+CoDEx datasets. On CoDEx-S, it achieves the highest MRR (0.550) and leads
+in Hits@3 (0.647) and Hits@10 (0.764). While Hits@1 (0.423) trails OpenFact
+(0.430), MuCo-KGC’s overall ranking performance is superior. On CoDEx-M, it
+outperforms all baselines, with an MRR of 0.470 and the highest Hits@1 (0.392),
+Hits@3 (0.523), and Hits@10 (0.600), significantly surpassing OpenFact (MRR
+= 0.403) and ComplEx (MRR = 0.337).
+Table 3: A comparison of model param-
+eters.
+Model Number of parameters
+DIFT 7B
+Sim-KGC 220M
+MuCo-KGC 110MInsights and Hypothesis Valida-
+tion:MuCo-KGC outperforms tradi-
+tional KG embedding models, textual
+methods, and LLM-based approaches
+on many evaluation metrics, validat-
+ing the hypothesis that integrating re-
+lational and neighboring context via
+BERT enhances tail prediction accu-
+racy. While FB15k-237 results sug-
+gest opportunities to optimize perfor-
+manceindensenetworks,MuCo-KGC
+demonstrates exceptional adaptability and predictive precision, establishing it-
+self as a robust solution for KGC.
+Efficiency and Parameter Optimization While our model’s performance
+on FB15K-237 is less competitive in Hits@3 and Hits@10, it achieves this with
+a significantly reduced parameter count compared to SimKGC and DIFT. As
+shown in Table 3, our model uses 50% fewer parameters than SimKGC and
+an impressive 98.43% fewer parameters than DIFT. This highlights the model’s
+efficiency and its potential for scalability in resource-constrained environments
+without heavily compromising performance.
+Limitations: While our model demonstrates strong performance on datasets
+like WN18RR and CoDEx, its effectiveness on FB15k-237 is comparatively lim-
+ited, likely due to the dataset’s higher relation cardinality, long-tail distribu-
+tion, and increased complexity stemming from the removal of inverse triplets.
+These characteristics introduce noise, make pattern extraction more challeng-
+ing, and amplify the difficulty of capturing robust embeddings for rare relations.
+Moreover, the model’s reliance on contextual information may struggle with
+FB15k-237’s heterogeneous and less semantically rich graph structure. Future
+work could focus on dynamic relation-aware sampling, enhanced multi-hop con-
+texts tailored tohigh-diversity graphs,and loss functions addressing the long-tail
+distribution of entities and relations to improve robustness across more complex
+datasets.
+MuCo-KGC: Multi-Context-Aware Knowledge Graph Completion 11
+5 Ablation
+The ablation study (see Table 1) assesses the contributions of the Head Con-
+text ( Hc) and Relation Context ( Rc) components in the MuCo-KGC model on
+FB15k-237 and WN18RR datasets. The Hc-Only configuration, encapsulating
+the adjacent entities and relationships only, attains reasonable performance with
+an MRR of 0.310 and Hits@10 of 0.403 on FB15k-237, and an MRR of 0.420
+and Hits@10 of 0.616 on WN18RR. The Rc-Only, which utilizes global relational
+patterns, shows inferior performance compared to Hc-Only, achieving an MRR
+of 0.280 and Hits@10 of 0.271 on FB15k-237, and an MRR of 0.321 and Hits@10
+of 0.398 on WN18RR, highlighting the constraints of depending exclusively on
+global context. Evidently, each context independently contributes to enhance
+MuCo-KGC’s performance.
+6 Conclusion
+The MuCo-KGC method offers an efficient approach for knowledge graph com-
+pletion (KGC) by leveraging neighboring contextual information of the head
+entity and relation. It outperforms existing KGE-based and LLM-based meth-
+ods across several benchmark datasets, with notable improvements in MRR
+and Hit@k metrics. Specifically, MuCo-KGC enhances Hit@1 performance on
+WN18RRandCoDEx-Mby6.88%and25.23%,respectively.Additionally,MuCo-
+KGC demonstrates an average improvement of 1.63% on WN18RR, 3.77% on
+CoDEx-S and 20.15% on CoDEx-M in MRR metric, further showcasing its su-
+perior performance across diverse datasets. Ablation studies confirm the impor-
+tance of incorporating contextual data for better performance. By eliminating
+the need for entity descriptions and negative triplet sampling, MuCo-KGC offers
+a scalable and accurate solution. Future work could explore the integration of
+long-range spatial information to enhance model performance in high-density
+datasets.
+References
+1. Bollacker, K., Evans, C., Paritosh, P., Sturge, T., Taylor, J.: Freebase: A collabora-
+tively created graph database for structuring human knowledge. In: Proc. of ACM
+SIGMOD (2008)
+2. Zhu, Y., Wang, X., Chen, J., Qiao, S., Ou, Y., Yao, Y., Deng, S., Chen, H., Zhang,
+N.: LLMs for knowledge graph construction and reasoning: Recent capabilities and
+future opportunities. World Wide Web 27(5), 58 (2024)
+3. Miller, G. A.: WordNet: A lexical database for English. Communications of the
+ACM 38(11) (1995)
+4. Yao, L., Mao, C., Luo, Y.: KG-BERT: BERT for knowledge graph completion. In:
+Proc. of AAAI (2019)
+5. Yang, B., Yih, W., He, X., Gao, J., Deng, L.: Embedding Entities and Relations for
+Learning and Inference in Knowledge Bases. In: Proc. of ICLR (2015)
+12 H. Gul et al.
+6. Wang, B., Shen, T., Long, G., Zhou, T., Wang, Y., Chang, Y.: Structure-augmented
+text rep. learning for efficient KGC. In: Proc. of ACM Web Conf. (2021)
+7. Zhang, Z., Liu, X., Zhang, Y., Su, Q., Sun, X., He, B.: Pretrain-KGE: Learning
+Knowledge Representation from Pretrained Language Models. In: Proc. of EMNLP
+(2020)
+8. Liu, Y., Tian, X., Sun, Z., Hu, W.: Finetuning Generative Large Language Models
+with Discrimination Instructions for KGC. In: Proc. of ISWC (2024)
+9. Bordes, A., Usunier, N., Garcia-Duran, A., Weston, J., Yakhnenko, O.: Translating
+Embeddings for Modeling Multi-relational Data. In: Proc. of NeurIPS (2013)
+10. Sun, Z., Deng, Z. H., Nie, J. Y., Tang, J.: RotatE: Knowledge Graph Embedding
+by Relational Rotation in Complex Space. In: Proc. of ICLR (2019)
+11. Nickel, M., Tresp, V., Kriegel, H.: A three-way model for collective learning on
+multi-relational data. In: Proc. of ICML (2011)
+12. Zhang, Z., Cai, J., Zhang, Y., Wang, J.: Learning Hierarchy-Aware Knowledge
+Graph Embeddings for Link Prediction. In: Proc. of AAAI (2020)
+13. Wei, Y., Huang, Q., Zhang, Y., Kwok, J.: KICGPT: Large Language Model with
+Knowledge in Context for KGC. In: Proc. of EMNLP (2023)
+14. Wang, L., Zhao, W., Wei, Z., Liu, J.: SIM-KGC: Simple Contrastive KGC with
+Pre-trained Language Models. In: Proc. of ACL (2022)
+15. Safavi, T., Koutra, D.: CoDEX: A Comprehensive Knowledge Graph Completion
+Benchmark. In: Proc. of EMNLP (2020)
+16. Wang, Y., Broscheit, S., Gemulla, R.: A Relational Tucker Decomposition for
+Multi-Relational Link Prediction. arXiv preprint arXiv:1902.00898 (2019)
+17. Trouillon, T., Welbl, J., Riedel, S., Gaussier, E., Bouchard, G.: Complex embed-
+dings for simple link prediction. In: Proc. of ICML (2016)
+18. Dettmers, T., Minervini, P., Stenetorp, P., Riedel, S.: Convolutional 2D knowledge
+graph embeddings. In: Proc. of AAAI (2018)
+19. Vashishth, S., Sanyal, S., Nitin, V., Talukdar, P.: Composition-based Multi-
+Relational Graph Convolutional Networks. In: Proc. of ICLR (2020)
+20. Guo, J., Kok, S.: BiQUE: Biquaternionic Embeddings of Knowledge Graphs. In:
+Proc. of EMNLP (2021)
+21. Choi, B., Jang, D., Ko, Y.: MEM-KGC: Masked entity model for knowledge graph
+completion with pre-trained language model. IEEE Access 9, 132025–132032 (2021)
+22. Zhu, Z., Zhang, Z., Xhonneux, L.-P., Tang, J.: Neural Bellman-Ford Networks: A
+General GNN Framework for Link Prediction. In: Proc. of NeurIPS (2021)
+23. Li, I., Yang, B.: NNKGC: Improving Knowledge Graph Completion with Node
+Neighborhoods. In: Proc. of DL4KG Workshop, ISWC (2023)
+24. Song, L., Wang, A., Pan, X., Zhang, H., Yu, D., Jin, L., Mi, H., Su, J., Zhang, Y.,
+Yu, D.: OpenFact: Factuality Enhanced Open Knowledge Extraction. Transactions
+of the Association for Computational Linguistics 11, 686–702 (2023)
+25. Wang, K., Liu, Y., Sheng, Q. Z.: Swift and Sure: Hardness-aware Contrastive
+Learning for Low-dimensional Knowledge Graph Embeddings. In: Proc. of ACM
+Web Conference (2022)
+26. Vashishth, S., Sanyal, S., Nitin, V., Talukdar, P.: Composition-based Multi-
+Relational Graph Convolutional Networks. arXiv preprint arXiv:1911.03082 (2020)
+27. Wang, K., Liu, Y., Lin, D., Sheng, Q.: Hyperbolic geometry is not necessary:
+Lightweight euclidean-based models for low-dimensional knowledge graph embed-
+dings. arXiv preprint arXiv:2103.14930 (2021)
+28. Zeb, A., Saif, S., Chen, J., Yu, J. J., Jiang, Q., Zhang, D.: CoPE: Composition-
+based Poincaré embeddings for link prediction in knowledge graphs. Information
+Sciences 662, 120197 (2024)

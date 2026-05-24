@@ -1,4 +1,7 @@
+import json
 import os
+
+import torch
 
 def save_test_results(epoch, test_results, save_path):
     """Save test results to a file."""
@@ -24,6 +27,17 @@ def save_test_results(epoch, test_results, save_path):
     # Append the epoch results to the file
     with open(file_path, 'a') as file:
         file.write(epoch_results)
+
+
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(data, file, indent=2, sort_keys=True)
+
+
+def load_json(path):
+    with open(path, "r", encoding="utf-8") as file:
+        return json.load(file)
 
 def save_checkpoint(model, optimizer, epoch, checkpoint_path):
     """Save a training checkpoint."""

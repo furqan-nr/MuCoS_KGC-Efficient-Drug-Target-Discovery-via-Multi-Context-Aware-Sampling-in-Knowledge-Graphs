@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+.venv/
+
+# Data and outputs
+processed/
+outputs/
+
+# Model checkpoints and caches
+checkpoints/
+best_model/
+*.pth
+*.pt
+
+# VSCode
+/.vscode/

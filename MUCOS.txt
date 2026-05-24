@@ -1,0 +1,708 @@
+Proceedings of the 24th Workshop on Biomedical Language Processing (BioNLP 2025), pages 319–327
+August 1, 2025 ©2025 Association for Computational Linguistics
+MuCoS: Efficient Drug–Target Discovery via Multi-Context-Aware
+Sampling in Knowledge Graphs
+Haji Gul1a, Abdul Ghani Naim1b, Ajaz Ahmad Bhat∗1,
+1School of Digital Science, Universiti Brunei Darussalam, Jalan Tungku Link,
+Gadong BE1410, Brunei Darussalam,
+(23h1710a, ghani.naimb, ajaz.bhat∗)@ubd.edu.bn
+Abstract
+Accurate prediction of drug–target interactions
+is critical for accelerating drug discovery. In
+this work, we frame drug–target prediction
+as a link prediction task on heterogeneous
+biomedical knowledge graphs (KG) that inte-
+grate drugs, proteins, diseases, pathways, and
+other relevant entities. Conventional KG em-
+bedding methods such as TransE and ComplEx-
+SE are hindered by their reliance on computa-
+tionally intensive negative sampling and their
+limited generalization to unseen drug–target
+pairs. To address these challenges, we pro-
+pose Multi-Context-Aware Sampling (MuCoS),
+a novel framework that prioritizes high-density
+neighbours to capture salient structural patterns
+and integrates these with contextual embed-
+dings derived from BERT. By unifying struc-
+tural and textual modalities and selectively
+sampling highly informative patterns, MuCoS
+circumvents the need for negative sampling,
+significantly reducing computational overhead
+while enhancing predictive accuracy for novel
+drug–target associations and drug targets. Ex-
+tensive experiments on the KEGG50k and
+PharmKG-8k datasets demonstrate that Mu-
+CoS outperforms baselines, achieving up to a
+13% improvement in MRR for general relation
+prediction on KEGG50k, a 22% improvement
+on PharmKG-8k, and a 6% gain in dedicated
+drug–target relation prediction on KEGG50k.
+1 Introduction
+Drug target discovery lies at the core of modern
+therapeutic development, enabling the identifica-
+tion of new biological targets, the prediction of
+non-target effects, and opportunities for drug repur-
+posing — while significantly reducing experimen-
+tal costs and accelerating translational timelines
+(Sachdev and Gupta, 2019). Recent computational
+advances leverage knowledge graphs (KGs) to in-
+tegrate heterogeneous biomedical data (e.g., drugs,
+proteins, diseases, side effects, pathways) into uni-
+fied networks where nodes represent entities andedges capture relationships, essentially framing dis-
+covery as a link prediction problem (Himmelstein
+et al., 2017). For example, KG’s such as KEGG50k
+(Mohamed et al., 2019) PharmKG-8k (Zheng et al.,
+2021) and Hetionet (Himmelstein et al., 2017) pro-
+vide comprehensive, structured representations of
+biological components and their intricate associa-
+tions.
+Biomedical KGC methods, however, face a criti-
+cal trade-off: structural embedding methods such
+as ComplEx-SE (Mohamed et al., 2019) capture
+explicit drug-target relationships but fail to gen-
+eralize to unseen entities like novel drugs due to
+rigid geometric constraints. Conversely, graph neu-
+ral approaches like NeoDTI Progeni (Liu et al.,
+2024) integrate probabilistic reasoning with GNNs
+for state-of-the-art drug-target prediction but re-
+main unevaluated on relation-centric benchmarks
+like KEGG50k. Furthermore, none of these meth-
+ods exploit the rich textual semantics embedded
+in biomedical triples (e.g., "DRUG X →DRUG-
+TARGET-GENE →GENE Z"), which could pro-
+vide inductive signals for unseen entities by contex-
+tualizing relationships beyond structural adjacency.
+We posit that PharmKG-8k’s and KEGG50k’s
+relational triples are inherently compatible with
+textual encoding strategies and therefore believe
+that we can leverage a language transformer model
+like BERT’s bidirectional attention to jointly model
+the explicit relationships through syntactic patterns
+in entity-relation-entity chains. Moreover, we pro-
+pose to exploit, (a) the rich contextual information
+inherent in the graph’s structure such as neighbour-
+ing entities and relations associated with a given
+head entity and query relation, like GNNs do, and
+(b) associated features such as node degrees and
+connectivity that affect the performance of KG tech-
+niques(Cattaneo et al., 2024).
+We therefore propose MuCoS (Multi-Context-
+Aware Sampling ), a KG completion framework that
+overcomes these limitations by aggregating filtered319
+contextual information from adjacent entities and
+their relationships, and then integrating this seman-
+tically enriched context into a BERT model for
+better prediction of relationships and entities. In
+doing so, MuCoS advances drug target discovery
+in the following key ways:
+•Drug–Target Relation Prediction: By lever-
+aging optimized neighbouring contextual in-
+formation around nodes and relations, MuCoS
+outperforms traditional models in predicting
+general and drug–target relationships.
+•Target-tail Prediction: The method accu-
+rately predicts potential target tails (such as
+genes etc.) by incorporating contextualized
+structural information derived from the head
+entity and relationship.
+•Efficient Multi-Context Sampling: By prior-
+itizing informative structural patterns through
+density-based sampling, MuCoS reduces com-
+putational overhead while preserving high pre-
+dictive accuracy.
+•Elimination of Auxiliary Data Require-
+ments: Operating effectively without reliance
+on extensive entity descriptions or negative
+sampling, MuCoS is particularly well-suited
+for sparse biomedical datasets.
+2 Related Work
+Drug target discovery has been approached from
+multiple computational perspectives. Similarity-
+based methods quantify relationships by comput-
+ing pairwise distances—often using Euclidean or
+other metric functions—between drugs and their
+target proteins (Shi and Li, 2018). These methods
+typically rely on handcrafted similarity measures
+to distinguish interacting pairs. Feature-based tech-
+niques, predominantly employing support vector
+machines (Zhang et al., 2017), formulate the prob-
+lem as a binary classification or two-class cluster-
+ing task to differentiate between positive and nega-
+tive drug–target associations based on engineered
+features.
+Recent graph-based methods leverage hetero-
+geneous networks that integrate multiple simi-
+larity metrics—such as drug–drug, target–target,
+and cross-modal associations—to exploit the ho-
+mophily principle in biological systems (Ban et al.,
+2019). These approaches infer missing links
+by modelling complex interdependencies amongdrugs, proteins, diseases, and pathways. In parallel,
+the application of embedding-based techniques has
+evolved considerably (Bordes et al., 2013; Yang
+et al., 2014; Trouillon et al., 2016). For instance,
+Mohamed et al. (Mohamed et al., 2019) intro-
+duced ComplEx-SE, a variant of the ComplEx
+KGE model that adopts a squared error-based loss
+for enhanced accuracy. Recent works like NeoDTI
+(Liu et al., 2024) combine graph neural networks
+with probabilistic reasoning to achieve state-of-the-
+art performance in drug–target prediction.
+Despite these advances, current KGC methods
+still face challenges in drug target discovery. Tra-
+ditional embedding models depend on static, pre-
+trained embeddings, which hinder their ability to
+generalize to novel entities and interactions in
+rapidly evolving biomedical data (Gul et al., 2024).
+Text-based and large language model approaches
+require rich and consistent annotations—a resource
+often sparse in biomedical domains (Gul et al.,
+2025). Additionally, the reliance on extensive neg-
+ative sampling during training imposes significant
+computational burdens, particularly for large-scale
+datasets. These limitations motivate us to develop
+MuCoS as a flexible, context-aware and computa-
+tionally efficient model that integrates both struc-
+tural and textual cues to drive the discovery of new
+drug targets.
+3 Methodology
+MuCoS addresses two knowledge graph comple-
+tion tasks: (1) Link Prediction (inferring missing
+relations in triples like (h,?, t)) and (2) Tail Predic-
+tion (identifying missing tail entities in (h, r,?)).
+Both tasks are divided into general and drug-target-
+specific subtasks to balance broad applicability
+with a biomedical focus. Using the PharmKG-8k
+and the KEGG50k dataset, general subtasks predict
+relations/tails across all entities and relations, while
+drug-target subtasks use a filtered subset to predict
+specific relations.
+MuCoS builds on the MuCo-KGC model (Gul
+et al., 2025) to boost computational efficiency by
+strategically sampling high-density contextual in-
+formation (i.e., entities or relations that appear
+most frequently) from both entity and relation-
+neighbouring contexts before integrating it with
+BERT for precise predictions. For the transformer
+part of MuCoS, DistilBERT (base, uncased) has
+been employed, which is a smaller model that helps
+MuCoS run efficiently while still capturing context320
+Figure 1: A concise overview of the MuCoS model pipeline, which is designed to predict general and drug-target relations and
+tail entities. The boxes on the left show the input sequence to the BERT model, where (h)head, (Hc)head context, (t)tail,(Tc)
+tail context, (r)relation, and (Rc)relation context. This integrated context is passed through the BERT model with a linear
+classifier and softmax function to generate probabilities for relations and tail.
+well. We selected DistilBERT for its efficiency,
+retaining 95% of BERT’s performance while be-
+ing 40% smaller, making it suitable for large-scale
+knowledge graph tasks (Sanh et al., 2019). Figure 1
+provides an overview of the MuCoS pipeline. The
+subsequent sections detail the computations of the
+contextual information and the sampling process in
+the MuCoS pipeline.
+Given a head (h), tail(t), a relation (r)between
+them, MuCoS first figures out the corresponding
+neighbouring contexts, i.e., the head context (Hc),
+the tail-context (Tc)or the relationship context
+(Rc)and then selects out the high-density contexts.
+Based on the task at hand, relevant contexts are then
+concatenated and passed on to a BERT model with
+a linear classifier and softmax function to generate
+probabilities for relations or tails.
+Head Context Hc:To extract the contextual
+information for the head, i.e., Hc, we first identify
+the relations associated with the head entity h, i.e.,
+the relation neighbourhood R(h). Iflrelations are
+associated with hfrom the set Rof all relations ri
+in the graph, G, then:
+R(h) =Al
+i=1({ri|(h, ri, ej)∈ T, ej∈ E} )
+(1)
+where A(·)is the concatenation operation ∥,Tis
+the set of training triples, Etis the set of all tail
+entities, and rirepresents each relation associated
+withh. Next, we find the tail entities ethat are
+neighbours (i.e., have a direct connection) withthe head entity h, i.e., tail neighbourhood E(h),
+using the identified relations in R(h). Assuming
+mneighbour tails, E(h)is expressed as:
+E(h) =Am
+i=1({ti|(h, rj, ei)∈ T, rj∈ R} )
+(2)
+where E(h)is the set of all tail entities tidirectly
+associated with the hthrough some relation rj.
+Sampling: While MuCo-KGC (Gul et al., 2025)
+integrates R(h)andE(h)calculates the head con-
+text, this study introduce a density-based sampling
+for context calculation Hc, where the density ρ(e)
+of an entity e∈ E(h)is defined as its frequency of
+appearance in T.
+ρ(t) =|{(h, r, t )∈ T }| , for any h, r (3)
+ρ(t)denotes the density of the tail entity t, defined
+as the number of times tappears as the tail in triples
+(h, r, t ). Using these density values, we select nen-
+tities of highest density values and the relationships
+between head hand these top- nselected entities:
+topn(E(h)) = sort(E(h),byρ(e))[:n](4)
+R∗(h) =An
+i=1/parenleftbig
+{ri|(h, ri, ej)∈ T,
+ej∈topn(E(h))}/parenrightbig
+(5)
+topn(E(h))selects the top ntail entities from E(h)
+sorted by their density ρ(e).R∗(h)concatenates
+the relations riconnected hand the selected top- n321
+Figure 2: MuCoS Hcconstruction. The left graphical view illustrates one hop head hcontext, which consists of the set of
+relations R(h)(r1, r2, r3, r4, r5, r6) and the set of neighbouring tail entities E(h)(e1, e2, e3, e4, e5, e6) associated with the
+head entity h. The middle view shows the sampling process, where only the top- n(suppose n= 3) tail entities eare selected
+and concatenated ( ∥) based on their density ρ(e), to calculate the optimized head context Hc.
+tail entities. The optimized head context Hcis then
+defined as:
+Hc=R∗(h)∪topn(E(h)) (6)
+Figure 2 illustrates this sampling process, highlight-
+ing only a select subset of high-density neighbours
+(shown in red border) used to compute the aggre-
+gated context Hc. We follow the same procedure
+to compute the tail context Tc(for a given tail) re-
+quired along with head context Hcin the relation
+prediction task.
+Relation Context Rc:To acquire the relation
+context Rc, we identify all entities (heads and tails)
+associated with the operational relation rin the
+knowledge graph G. This includes the set of heads
+(e.g., drugs) eiand tails (e.g., genes) ejconnected
+byr:
+E(r) =Ao
+i,j=1({ei, ej} |(ei, r, e j)∈ T } )(7)
+E(r)is the concatenation of all head-tail entity
+pairs (ei, ej)connected by the relation rin the
+knowledge graph.
+Sampling: From the set of entities in Ec, the
+top-kelements with the highest density values ρ(e)
+are selected to generate the optimized relationship
+context Rc.
+Rc=topk(E(r)) = sort(E(r),by
+(ρ(ei) +ρ(ej)))[:k] (8)
+Rctherefore provides a focused global perspective
+onr’s patterns, enhancing generalization without
+excessively raising the time complexity. Figure 3
+depicts the sampling process involved in comput-
+ingRc, highlighting the selection of khigh-densityentity pairs (shown in red border) involved with
+the relation rto form the optimized relationship
+context. Following the extraction of contextual
+information via density-based sampling, MuCoS
+integrates these contexts into a BERT-based frame-
+work for prediction. The process for each subtask,
+leveraging the KEGG50k dataset and its filtered
+drug-target subset, is detailed below:
+•For task (1), link prediction , which includes
+two subtasks: General link prediction (h,?, t):
+The concatenated representations Hc(head
+context) and Tc(tail context) are combined
+with the head entity hand tail entity tto
+form the input sequence [h,Hc, t,Tc]. This
+sequence passes through BERT’s transformer
+layers, generating a contextualized represen-
+tation for each token. A classification layer
+then predicts the relation r, with a softmax
+function calculating the probability distribu-
+tion over all relations:
+P(r|h, t) =
+softmax (W·BERT (h,Hc, t,Tc))
+(9)
+Drug-target link prediction (h,?, t): Follow-
+ing Mohamed et al (Mohamed et al., 2019)
+in this case, we filter the dataset to consider
+drug-target relations only. Other than that, we
+follow the same methodology as above, where
+the input sequence [h,Hc, t,Tc]is processed
+by BERT to predict the drug-target-specific
+relations r.
+•For task (2), tail prediction , which includes
+two subtasks: General tail prediction (h, r,?):322
+Figure 3: Rcconstruction. The left view illustrates the relationship r1and entities (head, tail) connected by r1. The graph in
+the middle depicts optimization, selecting the top k(suppose k= 2) entities based on density ρ, retaining pairs such as (e2, e3)
+and(e6, e7)The optimized context Rcis aggregated using concatenation ( ∥), as shown in the right section.
+The concatenated representations Hc(head
+context) and Rc(relation context) are com-
+bined with the head entity hand relation rto
+form the input sequence [h,Hc, r,Hc], using
+the full KEGG50k dataset. BERT processes
+this sequence, and a classification layer pre-
+dicts the tail entity t:
+P(t|h, r) =
+softmax (W·BERT (h,Hc, r,Rc))
+(10)
+Drug-target tail prediction (h, r,?): Follow-
+ing above, we use a filtered drug-target subset
+of the KEGG50k dataset, to predict the tail
+entity t.
+We train the model using cross-entropy loss. For
+link prediction, Equation 11 defines the loss with
+yias the one-hot true label for relation riand
+P(ri|h, t)as the predicted probability. For tail
+prediction, Equation 12 defines the loss with yias
+the true label for tail entity tiandP(ti|h, r)as its
+predicted probability.
+(a)L=−N/summationdisplay
+i=1yilogP(ri|h, t), (11)
+(b)L=−N/summationdisplay
+i=1yilogP(gi|h, r) (12)
+where yiis the true label for the relation ri, and
+P(ri|h, t)is the predicted probability of the rela-
+tion given handt. On the other hand, P(ti|h, r)
+is the predicted probability of the tail given hand
+r.
+3.1 Computational Advantage of MuCoS over
+MuCo-KGC
+Compared to MuCo-KGC (Gul et al., 2025), Mu-
+CoS reduces computational complexity by sam-
+pling only the most significant neighbours (basedon density) from the full entity and relation con-
+texts. MuCoS employs two sampling thresholds:
+nfor the head entity context Hcandkfor the re-
+lation context Rc. To compute the complexities,
+we first define two terms: (i)the average density
+(avg_density ) as the average number of neigh-
+bours per entity in the knowledge graph, and (ii)
+average appearance ( avg_appearance ) of a rela-
+tionrin the dataset.
+avg_density =|T|
+|E|,
+avg_appearance =|T|
+|R|(13)
+where|T|is the total number of triples, |E|enti-
+ties, and |R|unique relations.
+ForMuCo-KGC , the complexity of computing
+the head context Hcand the relation context Rc
+is based on full neighbourhoods without sampling.
+The complexity of Hcdepends on the number of
+relations involving the head entity h, denoted as
+|R(h)|, and the number of neighbouring entities
+|E(h)|, both approximated by avg_density (see
+Equation 15). The complexity of Rcis determined
+by the number of entity pairs connected by relation
+r,|E(r)|, estimated using avg_appearance (see
+Equation 16). Therefore, the overall complexity
+for context computation in MuCo-KGC is defined
+equals:
+O(2·avg_density +avg_appearance )(14)
+where , O (|Hc|) =O(|R(h)|+|E(h)|)
+=O(2·avg_density )(15)
+and, O (|Rc|) =O(|E(r)|)
+=O(avg_appearance )(16)
+ForMuCoS , the head context Hcis computed by
+selecting the top- nhigh-density neighbouring en-
+tities and their corresponding relations, and the323
+relation context Rcare computed by selecting the
+top-khigh-density entity pairs. The complexity of
+HcisO(n)for the sampled entities and O(n)for
+the corresponding relations, and RcisO(k)for the
+sampled entity pairs. Thus, the overall complexity
+for context computation in MuCoS is:
+O(2·n+k) (17)
+Since sampling threshold values nandkare much
+smaller than avg_density andavg_appearance
+in large datasets like KEGG50k, MuCoS achieves
+a significant reduction in computational cost com-
+pared to MuCo-KGC.
+For example, in case of the KEGG50k dataset (
+with triplets |T|= 63,080, entities |E|= 16,201,
+and relations |R|= 9),avg_density ≈3.895,
+and avg_appearance ≈7,008.89. Therefore,
+the complexity of MuCo-KGC on the KEGG50k
+dataset is: O(2·3.895+7 ,008.89) = O(7,016.68).
+For MuCoS ( with n= 15 ,k= 10 : the complexity
+isO(2·15 + 10) = O(40). This is a speed up
+by a factor of ≈175.42in context computation,
+i.e., the process of extracting and aggregating rele-
+vant neighbourhood information associated with a
+given head entity and relation. Sampling the con-
+text reduces the input token length, which further
+contributes to the efficiency slightly. The primary
+computational gains however arise from our selec-
+tive sampling strategy, which significantly limits
+the amount of nodes/relations processed for context
+extraction.
+Sampling size values of nat 15 and kat 10,
+although empirical, are motivated from the ablation
+studies on MuCo-KGC, suggesting that the head
+context plays a greater role than the relationship
+context in model performance (see Table 1 and
+Table 3 for details).
+3.2 Experimental Setup
+We evaluate MuCoS on two prediction tasks us-
+ing KEGG50k and PharmKG-8k datasets: link and
+tail prediction. Each task is evaluated in two set-
+tings: the full KEGG50k dataset and a drug-target
+subset. In link prediction , we infer the missing
+relation in (h,?, t), with general and drug-target
+variants. Similarly, in tail prediction , we predict
+the missing entity in (h, r,?)for both settings. Be-
+low we provide the details of the dataset used in
+our experiments, the hyperparameter settings, and
+the evaluation criteria.
+Datasets :KEGG50k1medical domain dataset,
+1KEGG50k: https://shorturl.at/pWSJOcomprises 63,080 triples split into 57,080 training,
+3,000 validation, and 3,000 testing instances (i.e. a
+90:5:5 ratio split). Drug-target only triplet counts
+are 10769, 585, and 650 for the train, valid, and test
+sets. The dataset comprises 16,201 unique entities
+Ewhere (Ed∪Eg)⊂ E and 9 distinct types of drug-
+target relationships, enabling a comprehensive map-
+ping of pharmacological interactions. PharmKG-
+8k2comprises 400,788 training triplets, 49,536
+testing triplets, and 50,036 validation triplets, cov-
+ering 7,601 entities. These are categorized into
+Chemical, Disease, and Gene types, integrating
+data from DrugBank, TTD, OMIM, PharmGKB,
+and GNBR.
+Hyperparameters : The input sequence is to-
+kenized with a maximum length of 128 tokens.
+Training is conducted over 50 epochs using the
+AdamW optimizer with a learning rate of 5×10−5
+and a batch size of 16. Experiments were per-
+formed on an NVIDIA GeForce RTX 3090 GPU
+with 24 GB of memory.
+Evaluation : Model performance is assessed
+using standard metrics, Mean Reciprocal Rank
+(MRR) and Hits@k, as defined in Equations 18
+and 19, to evaluate the accuracy of general and
+drug-target relations and tail predictions:
+MRR =1
+NN/summationdisplay
+i=11
+rank i, (18)
+Hits@k =1
+NN/summationdisplay
+i=11(rank i≤k), (19)
+MRR measures the average of the reciprocal ranks
+of the correct item across all queries. A higher
+MRR indicates better ranking performance. H@k
+measures the proportion of queries where the cor-
+rect item appears in the top kranks. It provides a
+metric for evaluating ranking quality at different
+points.
+3.3 Results and Discussion
+Link Prediction: Table 1 demonstrates that Mu-
+CoS outperforms state-of-the-art baselines on the
+KEGG50k dataset. It achieves an MRR of 0.65
+for general link prediction across all relations, a
+13% improvement over ComplEx-SE’s 0.52, and its
+Hits@1 score of 0.52 exceeds ComplEx-SE’s 0.45
+by 7%. Moreover, Hits@3 and Hits@10 scores of
+0.60 and 0.86 further underscore the robust rank-
+ing performance of MuCoS. Although MuCo-KGC
+2PharmKG-8k: https://zenodo.org/records/4525237324
+Table 1: Relationship prediction results over the KEGG50k dataset on both general links and drug target links only.
+ModelGeneral link prediction Drug-target link prediction
+MRR Hits@1 Hits@3 Hits@10 MRR Hits@1 Hits@3 Hits@10
+TransE (Bordes et al., 2013) 0.46 0.38 0.50 0.63 0.75 0.69 0.79 0.86
+DistMult (Yang et al., 2014) 0.37 0.27 0.42 0.57 0.61 0.50 0.69 0.81
+ComplEx (Trouillon et al., 2016) 0.39 0.31 0.43 0.57 0.68 0.61 0.71 0.82
+ComplEx-SE (Mohamed et al., 2019) 0.52 0.45 0.56 0.68 0.78 0.73 0.81 0.88
+MuCoS- (H cOnly) 0.52 0.44 0.55 0.69 0.75 0.65 0.77 0.1
+MuCoS (T cOnly) 0.45 0.37 0.51 0.61 0.70 0.59 0.70 0.1
+MuCo-KGC (Gul et al., 2025) 0.79 0.58 0.73 0.92 0.94 0.91 0.96 1
+MuCoS 0.65 0.52 0.60 0.86 0.84 0.74 0.84 1
+(Gul et al., 2025) achieves state-of-the-art perfor-
+mance, MuCoS offers a significant computational
+advantage with a small reduction in accuracy.
+In drug–target prediction,which focuses on iden-
+tifying relationships between drugs and their tar-
+gets (e.g., genes), MuCoS achieves an MRR of
+0.84—a 6% improvement over ComplEx-SE’s
+0.78—demonstrating the benefit of contextual
+head/tail information. It also records Hits@1 of
+0.74 (vs. 0.73), Hits@3 of 0.84 (a 3% gain), and a
+perfect Hits@10 of 1.00 (12% improvement), out-
+performing TransE, DistMult, and ComplEx. Al-
+though MuCo-KGC attains higher accuracy (e.g.,
+an MRR of 0.94), its prohibitive computational cost
+limits scalability. MuCoS, by offering competitive
+performance with substantial efficiency gains, pro-
+vides a scalable solution for real-world, large-scale
+drug discovery.
+Table 2 shows that MuCoS achieves state-of-
+the-art performance on PharmKG-8k . It attains
+an MRR of 0.452, compared to NC-KGE’s 0.228,
+and a Hits@1 of 0.258 versus 0.145. Additionally,
+MuCoS records Hits@3 and Hits@10 scores of
+0.602 and 0.676, respectively.
+Tail Prediction: Table 3 compares tail prediction
+performance between MuCoS and MuCo-KGC un-
+der both general and drug-target settings. While
+MuCo-KGC (without sampling) achieves higher
+MRR, Hits@1, and Hits@3 in the general sce-
+nario, MuCoS (sampling-based) excels in drug-
+target cases, particularly in Hits@10. Thus, sam-
+pling enhances prediction accuracy for drug targets
+at a slight cost in the general scenario, and MuCoS
+offers a significant computational advantage while
+outperforming other models on KEGG50k.
+4 Ablation Study
+We analyze the contributions of the Head Context
+(Hc) and Tail Context ( Tc) components for relationTable 2: PharmKG8k-28 Results for Link Prediction
+Task.The symbol /Boxdenotes that the results are taken
+from Paper (Zheng et al., 2021), while the symbol △
+results are taken from Paper (Fan et al., 2023). R2N
+results are reported from (Diligenti et al., 2023).
+Model MRR H@1 H@3 H@10
+TransR /Box 0.075 0.030 0.071 0.155
+RESCAL /Box 0.064 0.023 0.057 0.122
+ConvE /Box 0.086 0.038 0.087 0.169
+ConvKB /Box 0.106 0.052 0.107 0.209
+RGCN /Box 0.067 0.027 0.062 0.139
+HRGAT /Box 0.154 0.075 0.172 0.315
+TransE △ 0.116 0.038 0.127 0.269
+DistMult △ 0.218 0.152 0.237 0.335
+ComplEx △ 0.124 0.064 0.128 0.244
+TruckER △ 0.182 0.103 0.202 0.336
+HRGAT △ 0.134 0.063 0.144 0.271
+SACN △ 0.156 0.085 0.170 0.296
+CompGCN △ 0.193 0.110 0.216 0.352
+SE-GNN △ 0.206 0.120 0.232 0.374
+R2N 0.215 0.145 0.234 0.342
+NC-KGE △ 0.228 0.145 0.252 0.390
+MuCoS 0.452 0.258 0.602 0.676
+(link) prediction, and Head Context ( Hc) and Rela-
+tion Context ( Rc) for the prediction of the tail. The
+results are presented in Tables 1 and 3.
+Relationship Prediction: Table 1 reports the re-
+sults for both general link prediction and drug-
+target link prediction scenarios. MuCo-KGC (Gul
+et al., 2025), the earlier method, demonstrates
+strong performance across all metrics, achieving
+an MRR of 0.79 for general link prediction and
+0.94 for drug-target link prediction. These results
+highlight its ability to leverage both Hc(Head Con-
+text) and Rc(Relation Context) effectively, ex-
+celling particularly in Hits@1 (0.58 and 0.91) and
+Hits@10 (0.92 and 0.1).
+Tail Prediction: Table 3 presents the results for
+both general tail prediction and drug-target-specific325
+Table 3: Tail prediction results on the KEGG50k dataset were evaluated for both general and drug target scenarios
+using methods with and without sampling.
+ModelGeneral tail prediction Drug-target tail prediction
+MRR Hits@1 Hits@3 Hits@10 MRR Hits@1 Hits@3 Hits@10
+MuCoS (H cOnly) 0.26 0.20 0.34 0.55 0.38 0.30 0.41 0.78
+MuCoS (R cOnly) 0.21 0.15 0.28 0.39 0.31 0.19 0.36 0.69
+MuCo-KGC 0.39 0.34 0.521 0.718 0.567 0.457 0.628 0.917
+MuCoS 0.31 0.215 0.40 0.57 0.442 0.259 0.46 0.868
+scenarios. MuCo-KGC (Gul et al., 2025) delivers
+robust performance, achieving an MRR of 0.39 for
+general tail prediction and 0.567 for drug-target
+tail prediction. Its superior Hits@1 scores (0.34
+and 0.457) and Hits@10 scores (0.71 and 0.917)
+confirm its effectiveness in capturing complex rela-
+tional patterns in the graph.
+Across both prediction tasks, the Hc-Only con-
+figuration consistently outperforms achieving an
+MRR of 0.52 (general links) and 0.75 (drug-target
+links) for relationships, and 0.26 (general tails) and
+0.38 (drug-target tails) for tail predictions. This
+highlights the critical role of localized contextual
+information over global relational patterns, which
+tend to underperform when used in isolation Tc-
+Only MRR: 0.45 and 0.70 for links; Rc-Only MRR:
+0.21 and 0.31 for tails).
+5 Conclusion
+The study introduces MuCoS, a multi-context-
+aware sampling method that uses DistilBERT
+to improve drug-target relation predictions and
+tail entity predictions in biomedical knowledge
+graphs. MuCoS employs a dual strategy combining
+transformer-based textual modeling with context-
+aware sampling to overcome limitations of exist-
+ing models, such as poor generalization, negative
+sampling, and the need for descriptive entity infor-
+mation. It extracts and optimizes contextualized
+information from the head, tail, and relation enti-
+ties using density-based sampling and its lexical
+semantics, capturing richer structural patterns and
+reducing computational complexity. Experimental
+results show superior performance over state-of-
+the-art models, with improvements in MRR and
+Hits@1 for general and drug-target relationship
+prediction on both KEGG50k and PharmKG-8k
+datasets. Future work could focus on adaptive
+sampling to dynamically adjust nandkfor sparse
+KGs, and integrate multimodal data like protein
+sequences or chemical structures to enhance drug-target prediction.
+References
+Tomohiro Ban, Masahito Ohue, and Yutaka Akiyama.
+2019. Nrlmf β: Beta-distribution-rescored neigh-
+borhood regularized logistic matrix factorization for
+improving the performance of drug–target interac-
+tion prediction. Biochemistry and biophysics reports ,
+18:100615.
+A. Bordes, N. Usunier, A. Garcia-Duran, J. Weston, and
+O. Yakhnenko. 2013. Translating embeddings for
+modeling multi-relational data. In Advances in NIPS ,
+volume 26. Curran Associates, Inc.
+Alberto Cattaneo, Thomas Martynec, Stephen Bonner,
+Carlo Luschi, and Daniel Justus. 2024. Towards link-
+ing graph topology to model performance for biomed-
+ical knowledge graph completion. In ICML’24 Work-
+shop ML for Life and Material Science: From Theory
+to Industry Applications .
+Michelangelo Diligenti, Francesco Giannini, Stefano
+Fioravanti, Caterina Graziani, Moreno Falaschi, and
+Giuseppe Marra. 2023. Enhancing embedding repre-
+sentations of biomedical data using logic knowledge.
+In2023 IJCNN , pages 1–8. IEEE.
+Zhiguang Fan, Yuedong Yang, Mingyuan Xu, and Hong-
+ming Chen. 2023. Node-based knowledge graph con-
+trastive learning for medical relationship prediction.
+Inhttps://arxiv.org/abs/2310.10138 .
+Haji Gul, Abdul Ghani Naim, and Ajaz A Bhat.
+2024. A contextualized bert model for knowledge
+graph completion. In MusIML, Advances in
+Neural Information Processing Systems (NeurIPS) ,
+pages https://neurips.cc/virtual/2024/affinity–
+event/105018.
+Haji Gul, Abdul Ghani Naim, and Ajaz A Bhat. 2025.
+Muco-kgc: Multi-context-aware knowledge graph
+completion. In The 29th Pacific-Asia Conference on
+Knowledge Discovery and Data Mining (PAKDD),
+https://arxiv.org/abs/2503.03091 .
+Daniel Scott Himmelstein, Antoine Lizee, Christine
+Hessler, Leo Brueggeman, Sabrina L Chen, Dexter
+Hadley, Ari Green, Pouya Khankhanian, and Sergio E
+Baranzini. 2017. Systematic integration of biomedi-
+cal knowledge prioritizes drugs for repurposing. elife,
+6:e26726.326
+Chang Liu, Kaimin Xiao, Cuinan Yu, Yipin Lei, Kangbo
+Lyu, Tingzhong Tian, Dan Zhao, Fengfeng Zhou,
+Haidong Tang, and Jianyang Zeng. 2024. A prob-
+abilistic knowledge graph for target identification.
+PLOS Comp Bio , 20(4):e1011945.
+Sameh K Mohamed, Aayah Nounu, and Vít Nová ˇcek.
+2019. Drug target discovery using knowledge
+graph embeddings. In Proceedings of the 34th
+ACM/SIGAPP symposium on applied computing ,
+pages 11–18.
+Kanica Sachdev and Manoj Kumar Gupta. 2019. A com-
+prehensive review of feature based methods for drug
+target interaction prediction. Journal of biomedical
+informatics , 93:103159.
+Victor Sanh, Lysandre Debut, Julien Chaumond, and
+Thomas Wolf. 2019. Distilbert, a distilled version
+of bert: smaller, faster, cheaper and lighter. arXiv
+preprint arXiv:1910.01108 .
+Zezhi Shi and Jianhua Li. 2018. Drug-target interac-
+tion prediction with weighted bayesian ranking. In
+Proceedings of the 2nd ICBB , pages 19–24.
+Théo Trouillon, Johannes Welbl, Sebastian Riedel, Éric
+Gaussier, and Guillaume Bouchard. 2016. Complex
+embeddings for simple link prediction. In ICML ,
+pages 2071–2080. PMLR.
+Bishan Yang, Wen tau Yih, Xiaodong He, Jianfeng Gao,
+and Li Deng. 2014. Embedding entities and relations
+for learning and inference in knowledge bases. In
+ICLR .
+Jun Zhang, Muchun Zhu, Peng Chen, and Bing Wang.
+2017. Drugrpe: random projection ensemble ap-
+proach to drug-target interaction prediction. Neuro-
+computing , 228:256–262.
+Shuangjia Zheng, Jiahua Rao, Ying Song, Jixian Zhang,
+Xianglu Xiao, Evandro Fei Fang, Yuedong Yang, and
+Zhangming Niu. 2021. Pharmkg: a dedicated knowl-
+edge graph benchmark for bomedical data mining.
+Briefings in bioinformatics , 22(4):bbaa344.327

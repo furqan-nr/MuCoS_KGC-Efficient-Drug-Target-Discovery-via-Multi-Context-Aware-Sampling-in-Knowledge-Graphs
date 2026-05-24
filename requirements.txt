@@ -1,0 +1,7 @@
+torch>=2.1.0
+transformers>=4.35.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Optional but recommended for faster training / better UX
+tqdm>=4.65.0
