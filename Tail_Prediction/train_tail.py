@@ -3,8 +3,8 @@ import os
 import time
 
 import torch
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
-from transformers import AdamW
 import config_tail
 
 from dataset_tail import TailContextDataset
