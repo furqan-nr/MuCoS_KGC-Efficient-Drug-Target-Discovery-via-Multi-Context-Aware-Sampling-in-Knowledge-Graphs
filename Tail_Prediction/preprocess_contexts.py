@@ -55,9 +55,18 @@ def build_split_contexts(
     hc_lengths = []
     rc_lengths = []
     token_lengths = []
+    total_rows = len(split_triplets)
+    progress_every = max(1, total_rows // 10) if total_rows else 1
+
+    print(
+        f"[preprocess] Building {split_name} contexts: {total_rows} triples -> {output_path}",
+        flush=True,
+    )
 
     with open(output_path, "w", encoding="utf-8") as outfile:
-        for head, relation, tail in split_triplets[["head", "relation", "tail"]].itertuples(index=False):
+        for idx, (head, relation, tail) in enumerate(
+            split_triplets[["head", "relation", "tail"]].itertuples(index=False), start=1
+        ):
             hc_candidates = exclude_exact(head_to_neighbors.get(head, []), head, relation, tail)
             rc_candidates = exclude_exact(relation_to_triples.get(relation, []), head, relation, tail)
 
@@ -108,6 +117,13 @@ def build_split_contexts(
             hc_lengths.append(len(head_context))
             rc_lengths.append(len(relation_context))
 
+            if idx % progress_every == 0 or idx == total_rows:
+                pct = (idx / total_rows) * 100.0 if total_rows else 100.0
+                print(
+                    f"[preprocess] {split_name}: {idx}/{total_rows} ({pct:.1f}%)",
+                    flush=True,
+                )
+
     stats = {
         f"avg_hc_len_{split_name}": compute_avg(hc_lengths, len(hc_lengths)),
         f"avg_rc_len_{split_name}": compute_avg(rc_lengths, len(rc_lengths)),
@@ -120,9 +136,16 @@ def build_split_contexts(
 def preprocess_all():
     os.makedirs(config_tail.PROCESSED_DIR, exist_ok=True)
 
+    print("[preprocess] Loading input triples...", flush=True)
+
     train_triplets = load_triplets(config_tail.train_file_path)
     valid_triplets = load_triplets(config_tail.valid_file_path)
     test_triplets = load_triplets(config_tail.test_file_path)
+
+    print(
+        f"[preprocess] Loaded train={len(train_triplets)}, valid={len(valid_triplets)}, test={len(test_triplets)}",
+        flush=True,
+    )
 
     all_triplets = pd.concat([train_triplets, valid_triplets, test_triplets], ignore_index=True)
 
@@ -142,6 +165,7 @@ def preprocess_all():
     head_to_neighbors, relation_to_triples = build_context_candidates(train_triplets)
 
     tokenizer = DistilBertTokenizer.from_pretrained(config_tail.MODEL_NAME)
+    print(f"[preprocess] Tokenizer ready: {config_tail.MODEL_NAME}", flush=True)
 
     stats = {
         "num_train_triples": len(train_triplets),
@@ -217,6 +241,7 @@ def preprocess_all():
     )
 
     save_json(os.path.join(config_tail.PROCESSED_DIR, "dataset_stats.json"), stats)
+    print("[preprocess] Finished. Saved vocabularies, contexts, and dataset_stats.json", flush=True)
 
     return {
         "train_path": train_path,

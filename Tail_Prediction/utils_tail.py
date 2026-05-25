@@ -1,7 +1,9 @@
 import json
 import os
+import random
 
 import torch
+import numpy as np
 
 def save_test_results(epoch, test_results, save_path):
     """Save test results to a file."""
@@ -39,21 +41,43 @@ def load_json(path):
     with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
 
-def save_checkpoint(model, optimizer, epoch, checkpoint_path):
-    """Save a training checkpoint."""
+
+def capture_rng_state():
+    state = {
+        "python_random_state": random.getstate(),
+        "numpy_random_state": np.random.get_state(),
+        "torch_random_state": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda_random_state_all"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def restore_rng_state(state):
+    if not state:
+        return
+    random.setstate(state["python_random_state"])
+    np.random.set_state(state["numpy_random_state"])
+    torch.set_rng_state(state["torch_random_state"])
+    if torch.cuda.is_available() and "torch_cuda_random_state_all" in state:
+        torch.cuda.set_rng_state_all(state["torch_cuda_random_state_all"])
+
+
+def save_checkpoint(model, optimizer, checkpoint_path, **metadata):
+    """Save a training checkpoint with optional metadata for exact resume."""
     checkpoint = {
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'epoch': epoch
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        **metadata,
     }
     torch.save(checkpoint, checkpoint_path)
+
 
 def load_checkpoint(model, optimizer, checkpoint_path):
     """Load a training checkpoint if it exists."""
     if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        return checkpoint['epoch']
-    else:
-        return 0  # Start from scratch
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        return checkpoint
+    return None

@@ -30,3 +30,11 @@ MAX_SAME_RELATION_IN_HC = 5
 
 # Reproducibility
 SEED = 42
+
+# Laptop-friendly opt-in controls
+RESUME_TRAINING = os.getenv("MUCOS_RESUME_TRAINING", "1") == "1"
+CHECKPOINT_EVERY_STEPS = int(os.getenv("MUCOS_CHECKPOINT_EVERY_STEPS", "0"))
+MAX_TRAIN_SECONDS = float(os.getenv("MUCOS_MAX_TRAIN_SECONDS", "0"))
+
+# Runtime logging controls
+LOG_EVERY_STEPS = int(os.getenv("MUCOS_LOG_EVERY_STEPS", "100"))

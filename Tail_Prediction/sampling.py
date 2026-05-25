@@ -1,4 +1,3 @@
-import math
 from collections import Counter
 
 def _type_compatibility(entity, query_relation, entity_types=None):
@@ -91,7 +90,9 @@ def budget_contexts(
     max_same_relation_in_hc,
     entity_types=None,
 ):
+    """Select head/relation contexts using the fixed MuCoS budgets."""
     hc_budget = min(max_hc, len(hc_candidates))
+
     unused_hc_slots = max_hc - hc_budget
 
     rc_budget = min(
