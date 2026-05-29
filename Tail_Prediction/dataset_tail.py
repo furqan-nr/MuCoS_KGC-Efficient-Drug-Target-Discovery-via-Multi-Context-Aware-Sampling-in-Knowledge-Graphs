@@ -12,17 +12,31 @@ class TailContextDataset(Dataset):
     the file, seeks to the stored offset, reads one line, decodes and parses it.
     """
 
-    def __init__(self, jsonl_path, tokenizer, max_length=128, tokenized_path=None, use_tokenized_cache=True):
+    def __init__(
+        self,
+        jsonl_path,
+        tokenizer,
+        max_length=128,
+        tokenized_path=None,
+        use_tokenized_cache=True,
+        require_tokenized_cache=False,
+    ):
         self.jsonl_path = jsonl_path
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.tokenized_path = tokenized_path
         self.use_tokenized_cache = use_tokenized_cache
+        self.require_tokenized_cache = require_tokenized_cache
 
         self._tokenized = None
         if self.use_tokenized_cache and self.tokenized_path and os.path.exists(self.tokenized_path):
             self._tokenized = torch.load(self.tokenized_path, map_location="cpu")
             return
+        if self.use_tokenized_cache and self.require_tokenized_cache and self.tokenized_path:
+            raise FileNotFoundError(
+                f"Tokenized cache required but missing: {self.tokenized_path}. "
+                "Re-run preprocessing or disable MUCOS_REQUIRE_TOKENIZED_CACHE."
+            )
 
         if not os.path.exists(self.jsonl_path):
             raise FileNotFoundError(f"JSONL not found: {self.jsonl_path}")

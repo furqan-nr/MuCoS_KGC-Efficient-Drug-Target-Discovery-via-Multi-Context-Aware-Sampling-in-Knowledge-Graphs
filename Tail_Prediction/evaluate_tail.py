@@ -13,6 +13,9 @@ def evaluate_model(
     split_name="test",
     relation_prior=None,
     prior_alpha=0.0,
+    relation_constraints=None,
+    constraint_min_k=0,
+    constraint_fallback=True,
 ):
     model.eval()
     ranks = []
@@ -32,14 +35,30 @@ def evaluate_model(
                 if idx is not None:
                     bias_vec[idx] = float(log_prob)
             prior_bias[relation] = bias_vec
+        prior_bias = {relation: bias_vec.to(device) for relation, bias_vec in prior_bias.items()}
+
+    constraint_indices = None
+    constraint_sets = None
+    if relation_constraints:
+        if "label_to_idx" not in locals():
+            label_to_idx = {label: idx for idx, label in enumerate(label_list)}
+        constraint_indices = {}
+        constraint_sets = {}
+        for relation, tails in relation_constraints.items():
+            idxs = [label_to_idx[tail] for tail in tails if tail in label_to_idx]
+            if constraint_min_k and len(idxs) < constraint_min_k:
+                continue
+            if idxs:
+                constraint_indices[relation] = torch.tensor(idxs, dtype=torch.long).to(device)
+                constraint_sets[relation] = set(idxs)
 
     with torch.no_grad():
         for inputs, labels, meta in dataloader:
             inputs = {key: val.to(device) for key, val in inputs.items()}
             labels = labels.to(device)
             outputs = model(**inputs)
-            logits = outputs.logits.detach().cpu()
-            label_ids = labels.detach().cpu()
+            logits = outputs.logits
+            label_ids = labels
 
             # meta may be a dict of lists (collated mapping) or a list of dicts
             if isinstance(meta, dict):
@@ -60,16 +79,32 @@ def evaluate_model(
                         adjusted[row_idx] = adjusted[row_idx] + (prior_alpha * bias_vec)
                 logits = adjusted
 
+            if constraint_indices:
+                constrained_logits = logits.clone()
+                for row_idx in range(constrained_logits.size(0)):
+                    relation = relations[row_idx]
+                    allowed = constraint_indices.get(relation)
+                    if allowed is None:
+                        continue
+                    if constraint_fallback and label_ids[row_idx].item() not in constraint_sets.get(relation, set()):
+                        continue
+                    masked = torch.full_like(constrained_logits[row_idx], float("-inf"))
+                    masked[allowed] = constrained_logits[row_idx][allowed]
+                    constrained_logits[row_idx] = masked
+                logits = constrained_logits
+
             true_scores = logits.gather(1, label_ids.view(-1, 1))
             batch_ranks = 1 + (logits > true_scores).sum(dim=1)
-            ranks.extend(batch_ranks.tolist())
+            ranks.extend(batch_ranks.detach().cpu().tolist())
 
             max_k = min(10, logits.size(1))
             topk = torch.topk(logits, k=max_k, dim=1).indices
+            topk_cpu = topk.detach().cpu().tolist()
+            batch_ranks_cpu = batch_ranks.detach().cpu().tolist()
 
-            for idx, topk_row in enumerate(topk):
-                topk_ids = topk_row.tolist()
-                rank = int(batch_ranks[idx])
+            for idx, topk_row in enumerate(topk_cpu):
+                topk_ids = topk_row
+                rank = int(batch_ranks_cpu[idx])
                 top1_label = label_list[int(topk_ids[0])]
                 top3_labels = [label_list[int(i)] for i in topk_ids[: min(3, len(topk_ids))]]
                 top10_labels = [label_list[int(i)] for i in topk_ids[: min(10, len(topk_ids))]]

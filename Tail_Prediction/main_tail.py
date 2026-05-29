@@ -114,6 +114,7 @@ def main():
         max_length=config_tail.MAX_LENGTH,
         tokenized_path=os.path.join(config_tail.PROCESSED_DIR, "test_tokenized.pt"),
         use_tokenized_cache=config_tail.SAVE_TOKENIZED_CACHE,
+        require_tokenized_cache=config_tail.REQUIRE_TOKENIZED_CACHE,
     )
     test_dataloader = DataLoader(
         test_dataset,
@@ -129,6 +130,17 @@ def main():
     model = DistilBertForSequenceClassification.from_pretrained(best_model_dir)
     model.to(config_tail.device)
 
+    relation_constraints = None
+    if config_tail.TYPE_CONSTRAINT_ENABLED:
+        candidates_path = os.path.join(config_tail.PROCESSED_DIR, "relation_tail_candidates.json")
+        if os.path.exists(candidates_path):
+            relation_constraints = load_json(candidates_path)
+        else:
+            print(
+                f"[pipeline] Type constraints enabled, but file missing: {candidates_path}",
+                flush=True,
+            )
+
     test_start = time.perf_counter()
     test_metrics = evaluate_model(
         model,
@@ -137,6 +149,9 @@ def main():
         train_results["tail_labels"],
         save_dir=config_tail.OUTPUT_DIR,
         split_name="test",
+        relation_constraints=relation_constraints,
+        constraint_min_k=config_tail.TYPE_CONSTRAINT_MIN_K,
+        constraint_fallback=config_tail.TYPE_CONSTRAINT_FALLBACK,
     )
     test_time = time.perf_counter() - test_start
     print(f"[pipeline] Test evaluation finished in {test_time:.2f}s", flush=True)
@@ -159,6 +174,7 @@ def main():
                 max_length=config_tail.MAX_LENGTH,
                 tokenized_path=os.path.join(config_tail.PROCESSED_DIR, "valid_tokenized.pt"),
                 use_tokenized_cache=config_tail.SAVE_TOKENIZED_CACHE,
+                require_tokenized_cache=config_tail.REQUIRE_TOKENIZED_CACHE,
             )
             valid_dataloader = DataLoader(
                 valid_dataset,
@@ -182,6 +198,9 @@ def main():
                     split_name="valid",
                     relation_prior=relation_prior,
                     prior_alpha=alpha,
+                    relation_constraints=relation_constraints,
+                    constraint_min_k=config_tail.TYPE_CONSTRAINT_MIN_K,
+                    constraint_fallback=config_tail.TYPE_CONSTRAINT_FALLBACK,
                 )
                 prior_records.append({"alpha": alpha, "metrics": metrics})
                 if metrics["MRR"] > best_mrr:
@@ -207,6 +226,9 @@ def main():
                 split_name="test_prior",
                 relation_prior=relation_prior,
                 prior_alpha=best_prior_alpha if best_prior_alpha is not None else 0.0,
+                relation_constraints=relation_constraints,
+                constraint_min_k=config_tail.TYPE_CONSTRAINT_MIN_K,
+                constraint_fallback=config_tail.TYPE_CONSTRAINT_FALLBACK,
             )
             save_json(os.path.join(config_tail.OUTPUT_DIR, "test_prior_metrics.json"), prior_metrics)
             print(

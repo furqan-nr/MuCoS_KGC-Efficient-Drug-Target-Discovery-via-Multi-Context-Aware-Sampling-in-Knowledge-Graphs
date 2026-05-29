@@ -10,7 +10,12 @@ from transformers import DistilBertTokenizer
 
 import config_tail
 from reproducibility import save_json
-from sampling import budget_contexts
+from sampling import (
+    score_hc_candidates,
+    score_rc_candidates,
+    select_head_context,
+    select_relation_context,
+)
 
 
 def load_triplets(file_path):
@@ -60,6 +65,8 @@ def build_split_contexts(
     token_lengths = []
     at_max_count = 0
     tokenized_records = [] if tokenized_cache_path else None
+    scored_hc_cache = {}
+    scored_rc_cache = {}
     total_rows = len(split_triplets)
     progress_every = max(1, total_rows // 10) if total_rows else 1
 
@@ -75,21 +82,44 @@ def build_split_contexts(
         for idx, (head, relation, tail) in enumerate(
             split_triplets[["head", "relation", "tail"]].itertuples(index=False), start=1
         ):
-            hc_candidates = exclude_exact(head_to_neighbors.get(head, []), head, relation, tail)
-            rc_candidates = exclude_exact(relation_to_triples.get(relation, []), head, relation, tail)
+            hc_key = (head, relation)
+            rc_key = relation
+            if hc_key in scored_hc_cache:
+                scored_hc = scored_hc_cache[hc_key]
+            else:
+                hc_candidates_all = head_to_neighbors.get(head, [])
+                scored_hc = score_hc_candidates(hc_candidates_all, relation, degrees, entity_types=None)
+                scored_hc_cache[hc_key] = scored_hc
 
-            hc_selected, rc_selected = budget_contexts(
-                hc_candidates,
-                rc_candidates,
-                degrees,
-                relation,
-                config_tail.MAX_HC,
-                config_tail.MAX_RC,
-                config_tail.MAX_TOTAL_CONTEXT,
+            if rc_key in scored_rc_cache:
+                scored_rc = scored_rc_cache[rc_key]
+            else:
+                rc_candidates_all = relation_to_triples.get(relation, [])
+                scored_rc = score_rc_candidates(rc_candidates_all, relation, degrees, entity_types=None)
+                scored_rc_cache[rc_key] = scored_rc
+
+            filtered_hc = [
+                (score, h, r, t)
+                for score, h, r, t in scored_hc
+                if not (h == head and r == relation and t == tail)
+            ]
+            filtered_rc = [
+                (score, h, r, t)
+                for score, h, r, t in scored_rc
+                if not (h == head and r == relation and t == tail)
+            ]
+
+            hc_budget = min(config_tail.MAX_HC, len(filtered_hc))
+            unused_hc_slots = config_tail.MAX_HC - hc_budget
+            rc_budget = min(
+                config_tail.MAX_RC + unused_hc_slots,
                 config_tail.MAX_RC_IF_HC_SHORT,
-                config_tail.MAX_SAME_RELATION_IN_HC,
-                entity_types=None,
+                len(filtered_rc),
             )
+            rc_budget = min(rc_budget, config_tail.MAX_TOTAL_CONTEXT - hc_budget)
+
+            hc_selected = select_head_context(filtered_hc, hc_budget, config_tail.MAX_SAME_RELATION_IN_HC)
+            rc_selected = select_relation_context(filtered_rc, rc_budget)
 
             head_context = [f"{h}-{r}-{t}" for h, r, t in hc_selected]
             relation_context = [f"{h}-{r}-{t}" for h, r, t in rc_selected]
@@ -106,19 +136,55 @@ def build_split_contexts(
                     f"{head} [SEP] {relation} [SEP] {matched_hc_str} [SEP] "
                     f"{other_hc_str} [SEP] {relation_context_str}"
                 ).strip()
+                encoded = tokenizer(
+                    input_text,
+                    truncation=True,
+                    max_length=config_tail.MAX_LENGTH,
+                    add_special_tokens=True,
+                    return_attention_mask=True,
+                )
+            elif config_tail.CONTEXT_ORDER == "auto":
+                input_text_default = (
+                    f"{head} [SEP] {head_context_str} [SEP] "
+                    f"{relation} [SEP] {relation_context_str}"
+                ).strip()
+                encoded = tokenizer(
+                    input_text_default,
+                    truncation=True,
+                    max_length=config_tail.MAX_LENGTH,
+                    add_special_tokens=True,
+                    return_attention_mask=True,
+                )
+                if len(encoded["input_ids"]) >= config_tail.MAX_LENGTH and relation_context_str:
+                    matched_hc = [f"{h}-{r}-{t}" for h, r, t in hc_selected if r == relation]
+                    other_hc = [f"{h}-{r}-{t}" for h, r, t in hc_selected if r != relation]
+                    matched_hc_str = " ".join(matched_hc)
+                    other_hc_str = " ".join(other_hc)
+                    input_text = (
+                        f"{head} [SEP] {relation} [SEP] {matched_hc_str} [SEP] "
+                        f"{other_hc_str} [SEP] {relation_context_str}"
+                    ).strip()
+                    encoded = tokenizer(
+                        input_text,
+                        truncation=True,
+                        max_length=config_tail.MAX_LENGTH,
+                        add_special_tokens=True,
+                        return_attention_mask=True,
+                    )
+                else:
+                    input_text = input_text_default
             else:
                 input_text = (
                     f"{head} [SEP] {head_context_str} [SEP] "
                     f"{relation} [SEP] {relation_context_str}"
                 ).strip()
-
-            encoded = tokenizer(
-                input_text,
-                truncation=True,
-                max_length=config_tail.MAX_LENGTH,
-                add_special_tokens=True,
-                return_attention_mask=True,
-            )
+                encoded = tokenizer(
+                    input_text,
+                    truncation=True,
+                    max_length=config_tail.MAX_LENGTH,
+                    add_special_tokens=True,
+                    return_attention_mask=True,
+                )
             encoded_len = len(encoded["input_ids"])
             token_lengths.append(encoded_len)
             if encoded_len >= config_tail.MAX_LENGTH:
@@ -254,6 +320,15 @@ def preprocess_all():
     save_json(os.path.join(config_tail.PROCESSED_DIR, "entity_vocab.json"), all_entities)
     save_json(os.path.join(config_tail.PROCESSED_DIR, "relation_vocab.json"), all_relations)
     save_json(os.path.join(config_tail.PROCESSED_DIR, "tail_label_vocab.json"), tail_labels)
+
+    relation_tail_candidates = defaultdict(set)
+    for head, relation, tail in train_triplets[["head", "relation", "tail"]].itertuples(index=False):
+        relation_tail_candidates[relation].add(tail)
+    relation_tail_candidates = {relation: sorted(list(tails)) for relation, tails in relation_tail_candidates.items()}
+    save_json(
+        os.path.join(config_tail.PROCESSED_DIR, "relation_tail_candidates.json"),
+        relation_tail_candidates,
+    )
 
     degrees = build_degrees(train_triplets)
     head_to_neighbors, relation_to_triples = build_context_candidates(train_triplets)

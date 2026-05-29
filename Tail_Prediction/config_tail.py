@@ -23,6 +23,7 @@ MAX_LENGTH = 128
 
 # Preprocessing/cache controls
 SAVE_TOKENIZED_CACHE = os.getenv("MUCOS_SAVE_TOKENIZED_CACHE", "1") == "1"
+REQUIRE_TOKENIZED_CACHE = os.getenv("MUCOS_REQUIRE_TOKENIZED_CACHE", "0") == "1"
 
 # Runtime training controls
 USE_AMP = os.getenv("MUCOS_USE_AMP", "1") == "1"
@@ -32,6 +33,11 @@ PAD_TO_MULTIPLE_OF = int(os.getenv("MUCOS_PAD_TO_MULTIPLE_OF", "8"))
 RELATION_PRIOR_ENABLED = os.getenv("MUCOS_RELATION_PRIOR_ENABLED", "0") == "1"
 RELATION_PRIOR_ALPHAS = os.getenv("MUCOS_RELATION_PRIOR_ALPHAS", "0.0,0.05,0.1,0.2")
 
+# Optional type-constrained evaluation (relation -> allowed tail set)
+TYPE_CONSTRAINT_ENABLED = os.getenv("MUCOS_TYPE_CONSTRAINT_ENABLED", "0") == "1"
+TYPE_CONSTRAINT_MIN_K = int(os.getenv("MUCOS_TYPE_CONSTRAINT_MIN_K", "0"))
+TYPE_CONSTRAINT_FALLBACK = os.getenv("MUCOS_TYPE_CONSTRAINT_FALLBACK", "1") == "1"
+
 # Context budget constants
 MAX_HC = 15
 MAX_RC = 5
@@ -40,6 +46,7 @@ MAX_RC_IF_HC_SHORT = 10
 MAX_SAME_RELATION_IN_HC = 5
 
 # Input format control (default keeps original order)
+# Options: default, prioritize_relation, auto
 CONTEXT_ORDER = os.getenv("MUCOS_CONTEXT_ORDER", "default")
 
 # Reproducibility

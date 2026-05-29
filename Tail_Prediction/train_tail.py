@@ -84,6 +84,7 @@ def train_and_evaluate(
         max_length=max_length,
         tokenized_path=tokenized_train_path,
         use_tokenized_cache=config_tail.SAVE_TOKENIZED_CACHE,
+        require_tokenized_cache=config_tail.REQUIRE_TOKENIZED_CACHE,
     )
     valid_dataset = TailContextDataset(
         os.path.join(processed_dir, "valid_context.jsonl"),
@@ -91,6 +92,7 @@ def train_and_evaluate(
         max_length=max_length,
         tokenized_path=tokenized_valid_path,
         use_tokenized_cache=config_tail.SAVE_TOKENIZED_CACHE,
+        require_tokenized_cache=config_tail.REQUIRE_TOKENIZED_CACHE,
     )
 
     # Deterministic DataLoader setup
