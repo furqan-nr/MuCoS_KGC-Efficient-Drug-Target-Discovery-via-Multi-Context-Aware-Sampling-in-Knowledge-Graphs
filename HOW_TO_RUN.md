@@ -34,7 +34,7 @@ $env:MUCOS_FORCE_PREPROCESS = "1"
 $env:MUCOS_CONTEXT_ORDER = "auto"
 $env:MUCOS_TYPE_CONSTRAINT_ENABLED = "1"
 $env:MUCOS_REQUIRE_TOKENIZED_CACHE = "1"
-python Tail_Prediction\run_one_shot.py --data-dir data --processed-dir processed --output-dir outputs --epochs 12 --batch-size 8 --use-amp
+python Tail_Prediction\run_one_shot.py --data-dir data --processed-dir processed --output-dir outputs --epochs 30 --batch-size 8 --use-amp
 ```
 
 ## 4) Preprocess only
