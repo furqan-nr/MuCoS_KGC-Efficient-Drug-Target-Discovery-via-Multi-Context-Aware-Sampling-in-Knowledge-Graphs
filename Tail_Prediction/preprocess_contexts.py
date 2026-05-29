@@ -2,8 +2,10 @@ import json
 import os
 import time
 from collections import Counter, defaultdict
+import math
 
 import pandas as pd
+import torch
 from transformers import DistilBertTokenizer
 
 import config_tail
@@ -51,10 +53,13 @@ def build_split_contexts(
     tail_to_idx,
     tokenizer,
     output_path,
+    tokenized_cache_path=None,
 ):
     hc_lengths = []
     rc_lengths = []
     token_lengths = []
+    at_max_count = 0
+    tokenized_records = [] if tokenized_cache_path else None
     total_rows = len(split_triplets)
     progress_every = max(1, total_rows // 10) if total_rows else 1
 
@@ -62,6 +67,9 @@ def build_split_contexts(
         f"[preprocess] Building {split_name} contexts: {total_rows} triples -> {output_path}",
         flush=True,
     )
+
+    processed_dir = os.path.dirname(output_path)
+    progress_path = os.path.join(processed_dir, f"{split_name}_progress.json")
 
     with open(output_path, "w", encoding="utf-8") as outfile:
         for idx, (head, relation, tail) in enumerate(
@@ -89,18 +97,42 @@ def build_split_contexts(
             head_context_str = " ".join(head_context)
             relation_context_str = " ".join(relation_context)
 
-            input_text = (
-                f"{head} [SEP] {head_context_str} [SEP] "
-                f"{relation} [SEP] {relation_context_str}"
-            ).strip()
+            if config_tail.CONTEXT_ORDER == "prioritize_relation":
+                matched_hc = [f"{h}-{r}-{t}" for h, r, t in hc_selected if r == relation]
+                other_hc = [f"{h}-{r}-{t}" for h, r, t in hc_selected if r != relation]
+                matched_hc_str = " ".join(matched_hc)
+                other_hc_str = " ".join(other_hc)
+                input_text = (
+                    f"{head} [SEP] {relation} [SEP] {matched_hc_str} [SEP] "
+                    f"{other_hc_str} [SEP] {relation_context_str}"
+                ).strip()
+            else:
+                input_text = (
+                    f"{head} [SEP] {head_context_str} [SEP] "
+                    f"{relation} [SEP] {relation_context_str}"
+                ).strip()
 
             encoded = tokenizer(
                 input_text,
                 truncation=True,
                 max_length=config_tail.MAX_LENGTH,
                 add_special_tokens=True,
+                return_attention_mask=True,
             )
-            token_lengths.append(len(encoded["input_ids"]))
+            encoded_len = len(encoded["input_ids"])
+            token_lengths.append(encoded_len)
+            if encoded_len >= config_tail.MAX_LENGTH:
+                at_max_count += 1
+
+            if tokenized_records is not None:
+                tokenized_records.append(
+                    {
+                        "input_ids": torch.tensor(encoded["input_ids"], dtype=torch.long),
+                        "attention_mask": torch.tensor(encoded["attention_mask"], dtype=torch.long),
+                        "label": tail_to_idx[tail],
+                        "metadata": {"head": head, "relation": relation, "tail": tail},
+                    }
+                )
 
             record = {
                 "head": head,
@@ -123,14 +155,76 @@ def build_split_contexts(
                     f"[preprocess] {split_name}: {idx}/{total_rows} ({pct:.1f}%)",
                     flush=True,
                 )
+                # Persist incremental tokenized cache and progress so work is not lost
+                if tokenized_cache_path and tokenized_records:
+                    try:
+                        torch.save(tokenized_records, tokenized_cache_path)
+                        with open(progress_path, "w", encoding="utf-8") as pf:
+                            pf.write(json.dumps({"processed_rows": idx}))
+                    except Exception:
+                        # Best-effort; do not fail preprocessing on save errors
+                        pass
 
     stats = {
         f"avg_hc_len_{split_name}": compute_avg(hc_lengths, len(hc_lengths)),
         f"avg_rc_len_{split_name}": compute_avg(rc_lengths, len(rc_lengths)),
         f"avg_input_tokens_{split_name}": compute_avg(token_lengths, len(token_lengths)),
+        f"pct_input_tokens_ge_max_{split_name}": (at_max_count / len(token_lengths)) * 100.0
+        if token_lengths
+        else 0.0,
     }
 
+    if tokenized_cache_path:
+        try:
+            torch.save(tokenized_records, tokenized_cache_path)
+            print(
+                f"[preprocess] Saved tokenized cache: {tokenized_cache_path}",
+                flush=True,
+            )
+            # write final progress
+            try:
+                with open(os.path.join(processed_dir, f"{split_name}_progress.json"), "w", encoding="utf-8") as pf:
+                    pf.write(json.dumps({"processed_rows": total_rows}))
+            except Exception:
+                pass
+        except Exception:
+            print(f"[preprocess] Warning: failed to save tokenized cache: {tokenized_cache_path}", flush=True)
+
     return stats
+
+
+def build_tokenized_cache_from_jsonl(jsonl_path, tokenizer, output_path):
+    tokenized_records = []
+    total_rows = 0
+    with open(jsonl_path, "r", encoding="utf-8") as infile:
+        for line in infile:
+            total_rows += 1
+            record = json.loads(line)
+            encoded = tokenizer(
+                record["input_text"],
+                truncation=True,
+                max_length=config_tail.MAX_LENGTH,
+                add_special_tokens=True,
+                return_attention_mask=True,
+            )
+            tokenized_records.append(
+                {
+                    "input_ids": torch.tensor(encoded["input_ids"], dtype=torch.long),
+                    "attention_mask": torch.tensor(encoded["attention_mask"], dtype=torch.long),
+                    "label": record["label"],
+                    "metadata": {
+                        "head": record["head"],
+                        "relation": record["relation"],
+                        "tail": record["tail"],
+                    },
+                }
+            )
+
+    torch.save(tokenized_records, output_path)
+    print(
+        f"[preprocess] Built tokenized cache from JSONL: {output_path} (rows={total_rows})",
+        flush=True,
+    )
 
 
 def preprocess_all():
@@ -164,6 +258,9 @@ def preprocess_all():
     degrees = build_degrees(train_triplets)
     head_to_neighbors, relation_to_triples = build_context_candidates(train_triplets)
 
+    head_neighbor_counts = [len(neighbors) for neighbors in head_to_neighbors.values()]
+    unique_train_heads = train_triplets["head"].nunique()
+
     tokenizer = DistilBertTokenizer.from_pretrained(config_tail.MODEL_NAME)
     print(f"[preprocess] Tokenizer ready: {config_tail.MODEL_NAME}", flush=True)
 
@@ -177,12 +274,22 @@ def preprocess_all():
         "unique_tails_train": train_triplets["tail"].nunique(),
         "unique_tails_valid": valid_triplets["tail"].nunique(),
         "unique_tails_test": test_triplets["tail"].nunique(),
+        "avg_head_neighbors_train": compute_avg(head_neighbor_counts, len(head_neighbor_counts)),
+        "pct_heads_with_context_train": (len(head_neighbor_counts) / unique_train_heads) * 100.0
+        if unique_train_heads
+        else 0.0,
     }
 
     train_tails = set(train_triplets["tail"].unique().tolist())
+    valid_tails = set(valid_triplets["tail"].unique().tolist())
     test_tails = set(test_triplets["tail"].unique().tolist())
+    unseen_valid_tails = valid_tails - train_tails
     unseen_test_tails = test_tails - train_tails
+    stats["num_valid_tails_unseen"] = len(unseen_valid_tails)
     stats["num_test_tails_unseen"] = len(unseen_test_tails)
+    stats["pct_valid_tails_unseen"] = (
+        (len(unseen_valid_tails) / len(valid_tails)) * 100.0 if valid_tails else 0.0
+    )
     stats["pct_test_tails_unseen"] = (
         (len(unseen_test_tails) / len(test_tails)) * 100.0 if test_tails else 0.0
     )
@@ -194,14 +301,37 @@ def preprocess_all():
         "max_rc_if_hc_short": config_tail.MAX_RC_IF_HC_SHORT,
         "max_same_relation_in_hc": config_tail.MAX_SAME_RELATION_IN_HC,
         "max_length": config_tail.MAX_LENGTH,
+        "context_order": config_tail.CONTEXT_ORDER,
         "context_graph": "train_only",
         "exclude_current_training_triple_from_context": True,
     }
     save_json(os.path.join(config_tail.PROCESSED_DIR, "context_config.json"), context_config)
 
+    prior_path = os.path.join(config_tail.PROCESSED_DIR, "relation_tail_prior.json")
+    relation_counts = defaultdict(Counter)
+    relation_totals = Counter()
+    for head, relation, tail in train_triplets[["head", "relation", "tail"]].itertuples(index=False):
+        relation_counts[relation][tail] += 1
+        relation_totals[relation] += 1
+
+    prior = {}
+    for relation, tail_counts in relation_counts.items():
+        total = relation_totals[relation]
+        if total == 0:
+            continue
+        prior[relation] = {tail: math.log(count / total) for tail, count in tail_counts.items()}
+
+    save_json(prior_path, prior)
+
     train_path = os.path.join(config_tail.PROCESSED_DIR, "train_context.jsonl")
     valid_path = os.path.join(config_tail.PROCESSED_DIR, "valid_context.jsonl")
     test_path = os.path.join(config_tail.PROCESSED_DIR, "test_context.jsonl")
+
+    tokenized_train_path = os.path.join(config_tail.PROCESSED_DIR, "train_tokenized.pt")
+    tokenized_valid_path = os.path.join(config_tail.PROCESSED_DIR, "valid_tokenized.pt")
+    tokenized_test_path = os.path.join(config_tail.PROCESSED_DIR, "test_tokenized.pt")
+    tokenized_paths = (tokenized_train_path, tokenized_valid_path, tokenized_test_path)
+    tokenized_enabled = config_tail.SAVE_TOKENIZED_CACHE
 
     stats.update(
         build_split_contexts(
@@ -213,6 +343,7 @@ def preprocess_all():
             tail_to_idx,
             tokenizer,
             train_path,
+            tokenized_cache_path=tokenized_train_path if tokenized_enabled else None,
         )
     )
     stats.update(
@@ -225,6 +356,7 @@ def preprocess_all():
             tail_to_idx,
             tokenizer,
             valid_path,
+            tokenized_cache_path=tokenized_valid_path if tokenized_enabled else None,
         )
     )
     stats.update(
@@ -237,11 +369,25 @@ def preprocess_all():
             tail_to_idx,
             tokenizer,
             test_path,
+            tokenized_cache_path=tokenized_test_path if tokenized_enabled else None,
         )
     )
 
     save_json(os.path.join(config_tail.PROCESSED_DIR, "dataset_stats.json"), stats)
+    if tokenized_enabled:
+        stats["tokenized_cache_paths"] = list(tokenized_paths)
+
     print("[preprocess] Finished. Saved vocabularies, contexts, and dataset_stats.json", flush=True)
+
+    if stats.get("avg_hc_len_train", 0.0) < 0.1:
+        print(
+            (
+                "[preprocess] Warning: avg_hc_len_train is near zero. "
+                f"avg_head_neighbors_train={stats.get('avg_head_neighbors_train', 0.0):.2f}, "
+                f"pct_heads_with_context_train={stats.get('pct_heads_with_context_train', 0.0):.2f}%"
+            ),
+            flush=True,
+        )
 
     return {
         "train_path": train_path,

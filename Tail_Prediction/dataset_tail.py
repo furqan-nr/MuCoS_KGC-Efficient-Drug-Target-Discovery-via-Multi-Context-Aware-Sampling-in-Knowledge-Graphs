@@ -12,10 +12,17 @@ class TailContextDataset(Dataset):
     the file, seeks to the stored offset, reads one line, decodes and parses it.
     """
 
-    def __init__(self, jsonl_path, tokenizer, max_length=128):
+    def __init__(self, jsonl_path, tokenizer, max_length=128, tokenized_path=None, use_tokenized_cache=True):
         self.jsonl_path = jsonl_path
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.tokenized_path = tokenized_path
+        self.use_tokenized_cache = use_tokenized_cache
+
+        self._tokenized = None
+        if self.use_tokenized_cache and self.tokenized_path and os.path.exists(self.tokenized_path):
+            self._tokenized = torch.load(self.tokenized_path, map_location="cpu")
+            return
 
         if not os.path.exists(self.jsonl_path):
             raise FileNotFoundError(f"JSONL not found: {self.jsonl_path}")
@@ -33,9 +40,23 @@ class TailContextDataset(Dataset):
         self._fh = None
 
     def __len__(self):
+        if self._tokenized is not None:
+            return len(self._tokenized)
         return len(self._offsets)
 
     def __getitem__(self, idx):
+        if self._tokenized is not None:
+            record = self._tokenized[idx]
+            inputs = {
+                "input_ids": record["input_ids"],
+                "attention_mask": record["attention_mask"],
+            }
+            label = record["label"]
+            if not isinstance(label, torch.Tensor):
+                label = torch.tensor(label, dtype=torch.long)
+            meta = record.get("metadata", {})
+            return inputs, label, meta
+
         offset = self._offsets[idx]
         # Open a persistent file handle per worker/process for faster reads
         if self._fh is None:
@@ -51,7 +72,6 @@ class TailContextDataset(Dataset):
         inputs = self.tokenizer(
             record["input_text"],
             return_tensors="pt",
-            padding="max_length",
             truncation=True,
             max_length=self.max_length,
         )

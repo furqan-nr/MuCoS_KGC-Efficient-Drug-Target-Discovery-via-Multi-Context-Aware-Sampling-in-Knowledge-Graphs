@@ -1,14 +1,7 @@
 import csv
 import os
 
-import numpy as np
 import torch
-
-
-def _rank_from_logits(logits, true_label):
-    order = np.argsort(-logits)
-    rank = int(np.where(order == true_label)[0][0]) + 1
-    return order, rank
 
 
 def evaluate_model(
@@ -18,6 +11,8 @@ def evaluate_model(
     label_list,
     save_dir=None,
     split_name="test",
+    relation_prior=None,
+    prior_alpha=0.0,
 ):
     model.eval()
     ranks = []
@@ -26,13 +21,25 @@ def evaluate_model(
     top10 = []
     records = []
 
+    prior_bias = None
+    if relation_prior:
+        label_to_idx = {label: idx for idx, label in enumerate(label_list)}
+        prior_bias = {}
+        for relation, tail_scores in relation_prior.items():
+            bias_vec = torch.zeros(len(label_list), dtype=torch.float32)
+            for tail, log_prob in tail_scores.items():
+                idx = label_to_idx.get(tail)
+                if idx is not None:
+                    bias_vec[idx] = float(log_prob)
+            prior_bias[relation] = bias_vec
+
     with torch.no_grad():
         for inputs, labels, meta in dataloader:
             inputs = {key: val.to(device) for key, val in inputs.items()}
             labels = labels.to(device)
             outputs = model(**inputs)
-            logits = outputs.logits.detach().cpu().numpy()
-            label_ids = labels.detach().cpu().numpy()
+            logits = outputs.logits.detach().cpu()
+            label_ids = labels.detach().cpu()
 
             # meta may be a dict of lists (collated mapping) or a list of dicts
             if isinstance(meta, dict):
@@ -44,13 +51,28 @@ def evaluate_model(
                 relations = [m["relation"] for m in meta]
                 tails = [m["tail"] for m in meta]
 
-            for idx, logit_row in enumerate(logits):
-                order, rank = _rank_from_logits(logit_row, int(label_ids[idx]))
-                ranks.append(rank)
+            if prior_bias and prior_alpha:
+                adjusted = logits.clone()
+                for row_idx in range(adjusted.size(0)):
+                    relation = relations[row_idx]
+                    bias_vec = prior_bias.get(relation)
+                    if bias_vec is not None:
+                        adjusted[row_idx] = adjusted[row_idx] + (prior_alpha * bias_vec)
+                logits = adjusted
 
-                top1_label = label_list[int(order[0])]
-                top3_labels = [label_list[int(i)] for i in order[:3]]
-                top10_labels = [label_list[int(i)] for i in order[:10]]
+            true_scores = logits.gather(1, label_ids.view(-1, 1))
+            batch_ranks = 1 + (logits > true_scores).sum(dim=1)
+            ranks.extend(batch_ranks.tolist())
+
+            max_k = min(10, logits.size(1))
+            topk = torch.topk(logits, k=max_k, dim=1).indices
+
+            for idx, topk_row in enumerate(topk):
+                topk_ids = topk_row.tolist()
+                rank = int(batch_ranks[idx])
+                top1_label = label_list[int(topk_ids[0])]
+                top3_labels = [label_list[int(i)] for i in topk_ids[: min(3, len(topk_ids))]]
+                top10_labels = [label_list[int(i)] for i in topk_ids[: min(10, len(topk_ids))]]
 
                 top1.append(top1_label)
                 top3.append(top3_labels)
@@ -68,13 +90,13 @@ def evaluate_model(
                     }
                 )
 
-    ranks_array = np.array(ranks, dtype=np.float32)
+    ranks_array = torch.tensor(ranks, dtype=torch.float32)
     metrics = {
-        "MRR": float(np.mean(1.0 / ranks_array)),
-        "Hits@1": float(np.mean(ranks_array <= 1)),
-        "Hits@3": float(np.mean(ranks_array <= 3)),
-        "Hits@5": float(np.mean(ranks_array <= 5)),
-        "Hits@10": float(np.mean(ranks_array <= 10)),
+        "MRR": float(torch.mean(1.0 / ranks_array).item()) if len(ranks_array) else 0.0,
+        "Hits@1": float(torch.mean((ranks_array <= 1).float()).item()) if len(ranks_array) else 0.0,
+        "Hits@3": float(torch.mean((ranks_array <= 3).float()).item()) if len(ranks_array) else 0.0,
+        "Hits@5": float(torch.mean((ranks_array <= 5).float()).item()) if len(ranks_array) else 0.0,
+        "Hits@10": float(torch.mean((ranks_array <= 10).float()).item()) if len(ranks_array) else 0.0,
     }
 
     if save_dir:

@@ -4,6 +4,28 @@ import random
 
 import torch
 import numpy as np
+from transformers import DataCollatorWithPadding
+
+
+class CollateWithPadding:
+    def __init__(self, tokenizer, pad_to_multiple_of=8):
+        self.data_collator = DataCollatorWithPadding(
+            tokenizer=tokenizer,
+            padding=True,
+            pad_to_multiple_of=pad_to_multiple_of,
+        )
+
+    def __call__(self, batch):
+        inputs = [item[0] for item in batch]
+        labels = []
+        meta = []
+        for _, label, metadata in batch:
+            labels.append(label.item() if isinstance(label, torch.Tensor) else int(label))
+            meta.append(metadata)
+
+        inputs = self.data_collator(inputs)
+        labels = torch.tensor(labels, dtype=torch.long)
+        return inputs, labels, meta
 
 def save_test_results(epoch, test_results, save_path):
     """Save test results to a file."""
@@ -81,3 +103,7 @@ def load_checkpoint(model, optimizer, checkpoint_path):
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         return checkpoint
     return None
+
+
+def build_collate_fn(tokenizer, pad_to_multiple_of=8):
+    return CollateWithPadding(tokenizer=tokenizer, pad_to_multiple_of=pad_to_multiple_of)

@@ -11,6 +11,7 @@ from dataset_tail import TailContextDataset
 from evaluate_tail import evaluate_model
 from utils_tail import (
     capture_rng_state,
+    build_collate_fn,
     load_checkpoint,
     load_json,
     restore_rng_state,
@@ -60,7 +61,8 @@ def train_and_evaluate(
         (
             "[train] Starting training "
             f"model={model_name}, epochs={num_epochs}, batch_size={batch_size}, "
-            f"lr={learning_rate}, device={device}, seed={config_tail.SEED}"
+            f"lr={learning_rate}, device={device}, seed={config_tail.SEED}, "
+            f"amp={config_tail.USE_AMP}"
         ),
         flush=True,
     )
@@ -73,15 +75,22 @@ def train_and_evaluate(
     model = model_class.from_pretrained(model_name, num_labels=num_labels)
     model.to(device)
 
+    tokenized_train_path = os.path.join(processed_dir, "train_tokenized.pt")
+    tokenized_valid_path = os.path.join(processed_dir, "valid_tokenized.pt")
+
     train_dataset = TailContextDataset(
         os.path.join(processed_dir, "train_context.jsonl"),
         tokenizer,
         max_length=max_length,
+        tokenized_path=tokenized_train_path,
+        use_tokenized_cache=config_tail.SAVE_TOKENIZED_CACHE,
     )
     valid_dataset = TailContextDataset(
         os.path.join(processed_dir, "valid_context.jsonl"),
         tokenizer,
         max_length=max_length,
+        tokenized_path=tokenized_valid_path,
+        use_tokenized_cache=config_tail.SAVE_TOKENIZED_CACHE,
     )
 
     # Deterministic DataLoader setup
@@ -104,6 +113,8 @@ def train_and_evaluate(
         flush=True,
     )
 
+    collate_fn = build_collate_fn(tokenizer, pad_to_multiple_of=config_tail.PAD_TO_MULTIPLE_OF)
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -112,6 +123,7 @@ def train_and_evaluate(
         worker_init_fn=worker_init_fn,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        collate_fn=collate_fn,
     )
 
     valid_dataloader = DataLoader(
@@ -122,9 +134,12 @@ def train_and_evaluate(
         worker_init_fn=worker_init_fn,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        collate_fn=collate_fn,
     )
 
     optimizer = AdamW(model.parameters(), lr=learning_rate)
+    use_amp = config_tail.USE_AMP and getattr(device, "type", str(device)) == "cuda"
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     checkpoints_dir = os.path.join(output_dir, "checkpoints")
     best_model_dir = os.path.join(output_dir, "best_model")
@@ -193,8 +208,9 @@ def train_and_evaluate(
     training_paused = False
     runtime_start = time.perf_counter()
 
-    for epoch in range(start_epoch, num_epochs):
-        model.train()
+    try:
+        for epoch in range(start_epoch, num_epochs):
+            model.train()
         start_train = time.perf_counter()
 
         epoch_seed = config_tail.SEED + epoch
@@ -209,6 +225,7 @@ def train_and_evaluate(
             worker_init_fn=worker_init_fn,
             num_workers=num_workers,
             pin_memory=pin_memory,
+            collate_fn=collate_fn,
         )
 
         train_loss = 0.0
@@ -235,10 +252,18 @@ def train_and_evaluate(
             labels = labels.to(device)
 
             optimizer.zero_grad()
-            outputs = model(**inputs, labels=labels)
-            loss = outputs.loss
-            loss.backward()
-            optimizer.step()
+            if use_amp:
+                with torch.amp.autocast("cuda"):
+                    outputs = model(**inputs, labels=labels)
+                    loss = outputs.loss
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                outputs = model(**inputs, labels=labels)
+                loss = outputs.loss
+                loss.backward()
+                optimizer.step()
             train_loss += loss.item()
             global_step += 1
 
@@ -296,8 +321,30 @@ def train_and_evaluate(
                 )
                 break
 
-        if training_paused:
-            break
+            if training_paused:
+                break
+    except KeyboardInterrupt:
+        # Save a resume checkpoint immediately on user interrupt (Ctrl+C)
+        save_checkpoint(
+            model,
+            optimizer,
+            latest_checkpoint_path,
+            epoch=epoch,
+            batch_index=batch_index + 1 if 'batch_index' in locals() else 0,
+            best_mrr=best_mrr,
+            global_step=global_step,
+            total_train_time=total_train_time + (time.perf_counter() - start_train) if 'start_train' in locals() else total_train_time,
+            total_valid_time=total_valid_time,
+            rng_state=capture_rng_state(),
+        )
+        training_paused = True
+        print(
+            (
+                "[train] KeyboardInterrupt received. Saved checkpoint for resume: "
+                f"{latest_checkpoint_path}"
+            ),
+            flush=True,
+        )
 
         epoch_train_time = time.perf_counter() - start_train
         total_train_time += epoch_train_time

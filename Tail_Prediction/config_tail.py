@@ -21,6 +21,17 @@ BATCH_SIZE = 16
 LEARNING_RATE = 5e-5
 MAX_LENGTH = 128
 
+# Preprocessing/cache controls
+SAVE_TOKENIZED_CACHE = os.getenv("MUCOS_SAVE_TOKENIZED_CACHE", "1") == "1"
+
+# Runtime training controls
+USE_AMP = os.getenv("MUCOS_USE_AMP", "1") == "1"
+PAD_TO_MULTIPLE_OF = int(os.getenv("MUCOS_PAD_TO_MULTIPLE_OF", "8"))
+
+# Optional relation-tail prior reranking
+RELATION_PRIOR_ENABLED = os.getenv("MUCOS_RELATION_PRIOR_ENABLED", "0") == "1"
+RELATION_PRIOR_ALPHAS = os.getenv("MUCOS_RELATION_PRIOR_ALPHAS", "0.0,0.05,0.1,0.2")
+
 # Context budget constants
 MAX_HC = 15
 MAX_RC = 5
@@ -28,12 +39,17 @@ MAX_TOTAL_CONTEXT = 20
 MAX_RC_IF_HC_SHORT = 10
 MAX_SAME_RELATION_IN_HC = 5
 
+# Input format control (default keeps original order)
+CONTEXT_ORDER = os.getenv("MUCOS_CONTEXT_ORDER", "default")
+
 # Reproducibility
 SEED = 42
 
 # Laptop-friendly opt-in controls
 RESUME_TRAINING = os.getenv("MUCOS_RESUME_TRAINING", "1") == "1"
-CHECKPOINT_EVERY_STEPS = int(os.getenv("MUCOS_CHECKPOINT_EVERY_STEPS", "0"))
+# Save intermediate checkpoints every N optimizer steps. Set to 0 to disable.
+# Default to a conservative small value so laptop users can interrupt safely.
+CHECKPOINT_EVERY_STEPS = int(os.getenv("MUCOS_CHECKPOINT_EVERY_STEPS", "100"))
 MAX_TRAIN_SECONDS = float(os.getenv("MUCOS_MAX_TRAIN_SECONDS", "0"))
 
 # Runtime logging controls

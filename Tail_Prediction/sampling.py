@@ -1,4 +1,5 @@
 from collections import Counter
+import math
 
 def _type_compatibility(entity, query_relation, entity_types=None):
     if not entity_types:

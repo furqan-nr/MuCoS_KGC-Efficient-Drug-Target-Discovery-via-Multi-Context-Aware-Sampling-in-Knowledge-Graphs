@@ -1,4 +1,5 @@
 import argparse
+import multiprocessing
 import os
 
 
@@ -20,11 +21,17 @@ def build_parser():
     parser.add_argument("--model-name", default=None, help="Hugging Face model name to fine-tune.")
     parser.add_argument("--checkpoint-every-steps", type=int, default=None, help="Save a checkpoint every N optimizer steps.")
     parser.add_argument("--max-train-seconds", type=float, default=None, help="Stop training after this many seconds and save a checkpoint.")
+    amp_group = parser.add_mutually_exclusive_group()
+    amp_group.add_argument("--use-amp", dest="use_amp", action="store_true", help="Enable mixed precision when CUDA is available.")
+    amp_group.add_argument("--no-use-amp", dest="use_amp", action="store_false", help="Disable mixed precision.")
+    parser.add_argument("--preprocess-only", action="store_true", help="Run preprocessing only and exit.")
+    parser.add_argument("--force-preprocess", action="store_true", help="Force preprocessing even if cached outputs exist.")
 
     resume_group = parser.add_mutually_exclusive_group()
     resume_group.add_argument("--resume-training", dest="resume_training", action="store_true", help="Resume from latest_checkpoint.pth if available.")
     resume_group.add_argument("--no-resume-training", dest="resume_training", action="store_false", help="Start fresh even if a checkpoint exists.")
     parser.set_defaults(resume_training=None)
+    parser.set_defaults(use_amp=None)
     return parser
 
 
@@ -38,7 +45,10 @@ def apply_environment_overrides(args):
         "MUCOS_OUTPUT_DIR": args.output_dir,
         "MUCOS_CHECKPOINT_EVERY_STEPS": None if args.checkpoint_every_steps is None else str(args.checkpoint_every_steps),
         "MUCOS_MAX_TRAIN_SECONDS": None if args.max_train_seconds is None else str(args.max_train_seconds),
+        "MUCOS_USE_AMP": None if args.use_amp is None else ("1" if args.use_amp else "0"),
         "MUCOS_RESUME_TRAINING": None if args.resume_training is None else ("1" if args.resume_training else "0"),
+        "MUCOS_PREPROCESS_ONLY": "1" if args.preprocess_only else None,
+        "MUCOS_FORCE_PREPROCESS": "1" if args.force_preprocess else None,
     }
     for env_name, value in env_overrides.items():
         if value is not None:
@@ -52,6 +62,12 @@ def resolve_dataset_paths(args):
         raise ValueError("Provide either all of --train-path/--valid-path/--test-path, or none of them.")
 
     if explicit_count == 3:
+        return
+
+    env_train = os.getenv("MUCOS_TRAIN_PATH")
+    env_valid = os.getenv("MUCOS_VALID_PATH")
+    env_test = os.getenv("MUCOS_TEST_PATH")
+    if all([env_train, env_valid, env_test]) and all(os.path.exists(p) for p in [env_train, env_valid, env_test]):
         return
 
     # No explicit split paths provided: try defaults first.
@@ -116,4 +132,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     raise SystemExit(main())
