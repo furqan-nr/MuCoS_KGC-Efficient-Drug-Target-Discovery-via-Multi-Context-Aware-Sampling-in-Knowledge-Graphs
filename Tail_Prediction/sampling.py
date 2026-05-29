@@ -2,8 +2,63 @@ from collections import Counter
 import math
 
 def _type_compatibility(entity, query_relation, entity_types=None):
+    """Return a [0.0..1.0] compatibility score for `entity` given `query_relation`.
+
+    Supported `entity_types` formats (heuristic):
+    - relation -> list/set of allowed tail entities (e.g. relation_tail_candidates.json)
+      In this case a membership test is used (1.0 if entity is allowed, else 0.0).
+    - entity -> list/set of type labels AND optionally relation -> set of allowed types
+      If both mappings are present, the score is fraction of matching types (Jaccard-like).
+    - entity -> list/set of type labels only: returns 0.5 if the entity has any type (weak signal),
+      otherwise 0.0.
+
+    The implementation is intentionally conservative: it returns a small, bounded
+    compatibility score that nudges sampling but does not dominate other heuristics.
+    """
     if not entity_types:
         return 0.0
+
+    # If entity_types directly maps relation -> allowed tail entities
+    try:
+        rel_allowed = entity_types.get(query_relation)
+    except Exception:
+        rel_allowed = None
+
+    if rel_allowed is not None:
+        # treat rel_allowed as a set or list of tail entity identifiers
+        try:
+            return 1.0 if entity in set(rel_allowed) else 0.0
+        except Exception:
+            # fallback
+            return 0.0
+
+    # If entity_types maps entity -> set(types)
+    entity_to_types = None
+    relation_to_types = None
+    if isinstance(entity_types, dict):
+        # Heuristic detection
+        # If keys look like entities mapping to types (values are lists/sets of str)
+        if entity in entity_types and isinstance(entity_types[entity], (list, set)):
+            entity_to_types = {entity: set(entity_types[entity])}
+
+        # Detect relation -> allowed type labels under a conventional key
+        relation_to_types = entity_types.get("relation_types") if isinstance(entity_types.get("relation_types"), dict) else None
+
+    # If we have both entity types and relation allowed types, compute overlap fraction
+    if entity_to_types and relation_to_types and query_relation in relation_to_types:
+        ent_types = next(iter(entity_to_types.values()))
+        rel_types = set(relation_to_types[query_relation])
+        if not ent_types or not rel_types:
+            return 0.0
+        inter = ent_types.intersection(rel_types)
+        # return normalized overlap (0..1)
+        return float(len(inter)) / float(len(rel_types))
+
+    # If we only have entity->types information available in the mapping
+    if entity in entity_types and isinstance(entity_types[entity], (list, set)):
+        # weak positive signal; scale down so it doesn't dominate other scores
+        return 0.5
+
     return 0.0
 
 

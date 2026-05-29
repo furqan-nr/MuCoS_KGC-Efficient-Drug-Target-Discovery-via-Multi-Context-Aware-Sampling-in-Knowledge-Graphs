@@ -141,7 +141,8 @@ def train_and_evaluate(
 
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     use_amp = config_tail.USE_AMP and getattr(device, "type", str(device)) == "cuda"
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    # Use the cuda.amp GradScaler when CUDA is available; enable only if use_amp
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     checkpoints_dir = os.path.join(output_dir, "checkpoints")
     best_model_dir = os.path.join(output_dir, "best_model")
