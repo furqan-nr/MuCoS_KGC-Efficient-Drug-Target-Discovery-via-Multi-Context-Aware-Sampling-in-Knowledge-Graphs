@@ -1,8 +1,8 @@
-# How to Run (Tail Prediction)
+How to Run (Tail Prediction)
 
-This guide is Windows-friendly and works on other OSes with equivalent shell syntax.
+This guide focuses on running the Tail Prediction pipeline on Windows (PowerShell) and is usable on other OSes with equivalent shell commands.
 
-## 1) Environment setup
+1) Create environment and install dependencies
 
 ```powershell
 python -m venv .venv
@@ -10,24 +10,25 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## 2) Data layout
+2) Data layout
 
-Place your data in:
+Place your data files under a folder (example: `data/`) with the following names:
 
 ```
-data/
-  train.txt
-  valid.txt
-  test.txt
+data\train.txt
+data\valid.txt
+data\test.txt
 ```
 
-Or set an alternate location:
+Or set an alternate location via environment variable:
 
 ```powershell
 $env:MUCOS_DATA_DIR = "path\to\data"
 ```
 
-## 3) One-time full run (preprocess + train + test)
+3) One-time full run (preprocess + train + test)
+
+Set recommended runtime flags (these control preprocessing, cache behavior and context ordering), then run the single-command pipeline which executes preprocessing, training and testing.
 
 ```powershell
 $env:MUCOS_FORCE_PREPROCESS = "1"
@@ -37,44 +38,52 @@ $env:MUCOS_REQUIRE_TOKENIZED_CACHE = "1"
 python Tail_Prediction\run_one_shot.py --data-dir data --processed-dir processed --output-dir outputs --epochs 30 --batch-size 8 --use-amp
 ```
 
-## 4) Pause and resume
+Notes:
+- If `MUCOS_REQUIRE_TOKENIZED_CACHE=1` the run will fail unless preprocessing writes tokenized caches to `processed/` (set `MUCOS_FORCE_PREPROCESS=1` to force preprocessing).
+- `--use-amp` enables automatic mixed precision if a CUDA device is available.
 
-### Pause (safe)
-- Press `Ctrl+C` once. A resume checkpoint is saved to `outputs\checkpoints\latest_checkpoint.pth`.
+4) Pause and resume
 
-### Resume
+Pause safely by pressing `Ctrl+C` once; the pipeline will save a resume checkpoint in `outputs\checkpoints\latest_checkpoint.pth`.
+
+To resume a run:
+
 ```powershell
 $env:MUCOS_RESUME_TRAINING = "1"
 python Tail_Prediction\run_one_shot.py --data-dir data --processed-dir processed --output-dir outputs
 ```
 
-### Start fresh (ignore checkpoints)
+Start fresh (ignore checkpoints):
+
 ```powershell
 $env:MUCOS_RESUME_TRAINING = "0"
 python Tail_Prediction\run_one_shot.py --data-dir data --processed-dir processed --output-dir outputs
 ```
 
-## 5) Useful flags and what they do
+5) Useful flags (tail-focused)
 
-### Core speed/accuracy flags
-- `MUCOS_CONTEXT_ORDER=auto`  : reorders contexts when truncation is likely (accuracy-friendly).
-- `MUCOS_TYPE_CONSTRAINT_ENABLED=1` : relation-based candidate sets for faster evaluation.
-- `MUCOS_REQUIRE_TOKENIZED_CACHE=1` : fail fast if tokenized cache is missing (prevents slow fallback).
-- `MUCOS_SAVE_TOKENIZED_CACHE=1` : save tokenized caches (on by default).
+- `MUCOS_CONTEXT_ORDER=auto`: reorder contexts to preserve relation tokens when truncation is likely.
+- `MUCOS_TYPE_CONSTRAINT_ENABLED=1`: enable precomputed relation→tail candidate sets for faster constrained evaluation.
+- `MUCOS_REQUIRE_TOKENIZED_CACHE=1`: require pre-built tokenized caches; fail fast if missing.
+- `MUCOS_SAVE_TOKENIZED_CACHE=1`: save tokenized caches during preprocessing (on by default).
+- `--use-amp` / `--no-use-amp`: enable/disable AMP.
+- `MUCOS_PAD_TO_MULTIPLE_OF=8`: pad to multiples for faster GPU kernels.
+- `MUCOS_CHECKPOINT_EVERY_STEPS=100`: checkpoint frequency (optimizer steps).
 
-### Runtime controls
-- `--use-amp` / `--no-use-amp` : enable/disable AMP on CUDA.
-- `MUCOS_PAD_TO_MULTIPLE_OF=8` : padding alignment for faster GPU kernels.
-- `MUCOS_CHECKPOINT_EVERY_STEPS=100` : checkpoint frequency in optimizer steps.
-
-### Data and output overrides
-- `--data-dir`, `--processed-dir`, `--output-dir` : command-line overrides.
-- `MUCOS_DATA_DIR`, `MUCOS_PROCESSED_DIR`, `MUCOS_OUTPUT_DIR` : environment overrides.
-- `MUCOS_FORCE_PREPROCESS=1` : rebuild processed data even if present.
-
-## 6) Where outputs go
+6) Outputs
 
 - Processed data: `processed/`
-- Checkpoints: `outputs/checkpoints/`
-- Best model: `outputs/best_model/`
-- Metrics: `outputs/test_metrics.json`, `outputs/speed_metrics.json`
+- Checkpoints: `outputs\checkpoints/`
+- Best model: `outputs\best_model/`
+- Metrics: `outputs\test_metrics.json`, `outputs\speed_metrics.json`
+
+7) Quick local test (small dataset)
+
+For a rapid smoke test using a tiny dataset, use:
+
+```powershell
+python Tail_Prediction\run_one_shot.py --data-dir data_small --processed-dir processed_small --output-dir outputs_small --epochs 2 --batch-size 4
+```
+
+This run helps verify end-to-end preprocessing, caching, training and evaluation without full-scale resources.
+

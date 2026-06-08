@@ -4,6 +4,14 @@ from torch.utils.data import Dataset, DataLoader
 from collections import defaultdict
 
 
+def _context_to_text(context):
+    if isinstance(context, str):
+        return context
+    if isinstance(context, list):
+        return " ".join(context)
+    return ""
+
+
 
 # ==================== LOAD TRIPLETS FUNCTION ====================
 # This function reads a knowledge graph file where each line contains
@@ -42,6 +50,29 @@ class KGRelationDataset(Dataset):
         self.entity_incoming_neighbors = entity_incoming_neighbors
         self.max_length = max_length
 
+        texts = []
+        labels = []
+        metas = []
+        for row in self.triplets.itertuples(index=False):
+            head, relation, tail = row.head, row.relation, row.tail
+
+            head_context = _context_to_text(self.entity_incoming_neighbors.get(head, ""))
+            tail_context = _context_to_text(self.entity_incoming_neighbors.get(tail, ""))
+
+            texts.append(f"{head} [SEP] {head_context} [SEP] {tail} [SEP] {tail_context}")
+            labels.append(self.relation_to_idx[relation])
+            metas.append({"head": head, "relation": relation, "tail": tail})
+
+        self.encodings = self.tokenizer(
+            texts,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_length,
+        )
+        self.labels = torch.tensor(labels, dtype=torch.long)
+        self.metas = metas
+
     def __len__(self):
         return len(self.triplets)
     
@@ -52,25 +83,10 @@ class KGRelationDataset(Dataset):
     # tokenizes it, and returns it along with the relation label.
 
     def __getitem__(self, idx):
-        row = self.triplets.iloc[idx]
-        head, relation, tail = row['head'], row['relation'], row['tail']
-        
-        # Get precomputed neighbor info for head and tail
-        head_context = self.entity_incoming_neighbors.get(head, [])
-        tail_context = self.entity_incoming_neighbors.get(tail, [])
-        
-        head_context_str = " ".join(head_context)
-        tail_context_str = " ".join(tail_context)
-        
-        # Input text: head, head context, tail, tail context
-        text = f"{head} [SEP] {head_context_str} [SEP] {tail} [SEP] {tail_context_str}"
-        
-        inputs = self.tokenizer(text, return_tensors="pt", padding="max_length",
-                                truncation=True, max_length=self.max_length)
-        inputs = {key: val.squeeze(0) for key, val in inputs.items()}
-        
-        label = torch.tensor(self.relation_to_idx[relation])
-        return inputs, label
+        inputs = {key: val[idx] for key, val in self.encodings.items()}
+        label = self.labels[idx]
+        meta = self.metas[idx]
+        return inputs, label, meta
 
 
 # ==================== PRECOMPUTE GRAPH CONTEXT ====================
@@ -96,22 +112,23 @@ def precompute_entity_info(all_triplets, max_degree):
     incoming_map = defaultdict(list)
     for head, relation, tail in all_triplets.values:
         incoming_map[tail].append((relation, head))
+
+    def rank_neighbors(items):
+        return sorted(items, key=lambda item: (-entity_degrees[item[1]], item[1], item[0]))
     
     # Step 3: for each entity, build its filtered incoming neighbor context
     entity_incoming_neighbors = {}
     for entity in entity_degrees.keys():
         neighbors = []
-        for rel, source in incoming_map.get(entity, []):
-            if entity_degrees[source] > max_degree:
-                continue
-            # For the source node, also get its incoming neighbors (filtered)
-            incoming_of_source = []
-            for rel_in, head_in in incoming_map.get(source, []):
-                if entity_degrees[head_in] <= max_degree:
-                    incoming_of_source.append(f"{rel_in} {head_in}")
-            incoming_str = " ".join(incoming_of_source)
-            neighbors.append(f"{rel} {source} [IN] {incoming_str}")
-        entity_incoming_neighbors[entity] = neighbors
+        ranked_neighbors = rank_neighbors(incoming_map.get(entity, []))[:max_degree]
+        for rel, source in ranked_neighbors:
+            incoming_of_source = rank_neighbors(incoming_map.get(source, []))[:max_degree]
+            incoming_str = " ".join(f"{rel_in} {head_in}" for rel_in, head_in in incoming_of_source)
+            if incoming_str:
+                neighbors.append(f"{rel} {source} [IN] {incoming_str}")
+            else:
+                neighbors.append(f"{rel} {source}")
+        entity_incoming_neighbors[entity] = " ".join(neighbors)
     return entity_degrees, entity_incoming_neighbors
 
 

@@ -1,10 +1,12 @@
+import os
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from transformers import AdamW
 
 from dataset import KGDataset
-from utils import save_evaluation_results
+from utils import save_evaluation_results, _rank_batch, hard_negative_hinge_loss
+import torch.nn.functional as F
 
 
 def evaluate_model(model, dataloader, device, relation_to_idx, test_triplets, tokenizer):
@@ -13,38 +15,20 @@ def evaluate_model(model, dataloader, device, relation_to_idx, test_triplets, to
     labels = []
     
     with torch.no_grad():
-        for idx in range(len(test_triplets)):
-            try:
-                row = test_triplets.iloc[idx]
-                head, true_relation, tail = row['head'], row['relation'], row['tail']
-                
-                inputs = tokenizer(
-                    f"{head} [SEP] {tail}",
-                    return_tensors="pt",
-                    padding="max_length",
-                    truncation=True,
-                    max_length=128
-                )
-                inputs = {key: val.squeeze(0).unsqueeze(0).to(device) for key, val in inputs.items()}
-                
-                outputs = model(**inputs)
-                logits = outputs.logits.squeeze().cpu().numpy()
-                scores = np.exp(logits) / np.sum(np.exp(logits))
-                
-                rankings.append(scores)
-                labels.append(relation_to_idx[true_relation])
-            except Exception as e:
-                print(f"Error during evaluation for index {idx}: {e}")
-                continue
+        for inputs, batch_labels in dataloader:
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            batch_labels = batch_labels.to(device)
+
+            outputs = model(**inputs)
+            logits = outputs.logits
+            rankings.extend(_rank_batch(logits, batch_labels))
     
     rankings = np.array(rankings)
-    labels = np.array(labels)
-    
-    mrr = np.mean([1.0 / (np.argsort(scores)[::-1].tolist().index(label) + 1)
-                   for scores, label in zip(rankings, labels)])
-    hits_at_1 = np.mean([label in np.argsort(scores)[::-1][:1] for scores, label in zip(rankings, labels)])
-    hits_at_3 = np.mean([label in np.argsort(scores)[::-1][:3] for scores, label in zip(rankings, labels)])
-    hits_at_10 = np.mean([label in np.argsort(scores)[::-1][:10] for scores, label in zip(rankings, labels)])
+
+    mrr = np.mean(1.0 / rankings)
+    hits_at_1 = np.mean(rankings <= 1)
+    hits_at_3 = np.mean(rankings <= 3)
+    hits_at_10 = np.mean(rankings <= 10)
     
     return {
         'MRR': mrr,
@@ -72,6 +56,10 @@ def train_and_evaluate(model_name, tokenizer_class, model_class, save_path, num_
     test_dataloader  = DataLoader(test_dataset, batch_size=16, shuffle=False)
     
     optimizer = AdamW(model.parameters(), lr=5e-5)
+    best_val_mrr = float("-inf")
+    epochs_without_improvement = 0
+    patience = 3
+    best_checkpoint_path = os.path.join(save_path, "checkpoint_best.pth")
     
     os.makedirs(save_path, exist_ok=True)
     
@@ -82,15 +70,21 @@ def train_and_evaluate(model_name, tokenizer_class, model_class, save_path, num_
             try:
                 inputs = {k: v.to(device) for k, v in inputs.items()}
                 labels = labels.to(device)
-                
+
                 optimizer.zero_grad()
-                outputs = model(**inputs, labels=labels)
-                loss = outputs.loss
-                
+                outputs = model(**inputs)
+                logits = outputs.logits
+                loss_ce = F.cross_entropy(logits, labels)
+
+                # simple hinge-based hard-negative emphasis
+                hloss = hard_negative_hinge_loss(logits, labels, top_k=1, margin=0.5, weight=1.0)
+
+                loss = loss_ce + hloss
+
                 if torch.isnan(loss).any():
                     print("Loss is NaN. Skipping this batch.")
                     continue
-                    
+
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -100,6 +94,29 @@ def train_and_evaluate(model_name, tokenizer_class, model_class, save_path, num_
         
         avg_train_loss = train_loss / len(train_dataloader) if len(train_dataloader) > 0 else 0.0
         print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}")
+
+        print("Evaluating on validation set...")
+        val_results = evaluate_model(model, valid_dataloader, device, relation_to_idx, valid_triplets, tokenizer)
+        print("Validation Results:")
+        print(val_results)
+
+        if val_results['MRR'] > best_val_mrr:
+            best_val_mrr = val_results['MRR']
+            epochs_without_improvement = 0
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': avg_train_loss,
+            }, best_checkpoint_path)
+            print(f"Best validation MRR improved to {best_val_mrr:.4f}; saved checkpoint_best.pth")
+        else:
+            epochs_without_improvement += 1
+            print(f"No validation MRR improvement for {epochs_without_improvement} epoch(s) (patience={patience}).")
+
+        if epochs_without_improvement >= patience:
+            print(f"Early stopping triggered after {patience} epoch(s) without validation improvement.")
+            break
         
         # Save checkpoint
         checkpoint_file = os.path.join(save_path, f"checkpoint_epoch_{epoch + 1}.pth")
@@ -111,6 +128,10 @@ def train_and_evaluate(model_name, tokenizer_class, model_class, save_path, num_
         }, checkpoint_file)
         print(f"Checkpoint saved: {checkpoint_file}")
     
+    if os.path.exists(best_checkpoint_path):
+        best_checkpoint = torch.load(best_checkpoint_path, map_location=device)
+        model.load_state_dict(best_checkpoint['model_state_dict'])
+
     # Final evaluation
     print("\nStarting final evaluation on test set...")
     eval_results = evaluate_model(model, test_dataloader, device, relation_to_idx, test_triplets, tokenizer)

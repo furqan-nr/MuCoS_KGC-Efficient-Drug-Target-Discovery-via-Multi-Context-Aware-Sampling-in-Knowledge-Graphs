@@ -1,18 +1,23 @@
 import os
 import pandas as pd
 from collections import defaultdict
+import torch
+
+
+def _rank_batch(logits, labels):
+    scores = torch.softmax(logits, dim=-1)
+    sorted_indices = torch.argsort(scores, dim=-1, descending=True)
+    ranks = []
+    for row_indices, label in zip(sorted_indices, labels):
+        rank = (row_indices == label).nonzero(as_tuple=False).item() + 1
+        ranks.append(rank)
+    return ranks
 
 
 def load_triplets(file_path):
-    """Load triplets and filter only DRUG_TARGET_GENE and DRUG_TARGET_PATHWAY relations."""
+    """Load triplets from a tab-separated file."""
     triplets_df = pd.read_csv(file_path, sep='\t', header=None, names=['head', 'relation', 'tail'])
-    
-    # Filter for specific drug-target relations (as in your original code)
-    drug_target_triplets = triplets_df[
-        (triplets_df['relation'] == 'DRUG_TARGET_GENE') | 
-        (triplets_df['relation'] == 'DRUG_TARGET_PATHWAY')
-    ]
-    return drug_target_triplets
+    return triplets_df
 
 
 def get_one_hop_head_entity_neighbors(entity, triplets, max_degree=20):
@@ -51,3 +56,23 @@ def save_evaluation_results(results, save_path):
     with open(results_file, "w") as f:
         json.dump(results, f, indent=4)
     print(f"Evaluation results saved to {results_file}")
+
+
+def hard_negative_hinge_loss(logits: torch.Tensor, labels: torch.Tensor,
+                             top_k: int = 1, margin: float = 0.5, weight: float = 1.0) -> torch.Tensor:
+    """Compute hinge loss on the hardest incorrect label(s) per sample.
+
+    logits: (batch, num_classes), labels: (batch,)
+    Returns scalar loss.
+    """
+    if top_k <= 0:
+        return torch.tensor(0.0, device=logits.device)
+
+    logits_clone = logits.clone()
+    logits_clone[torch.arange(logits.size(0)), labels] = -1e9
+
+    pos_scores = logits[torch.arange(logits.size(0)), labels]
+    topk_vals, _ = torch.topk(logits_clone, top_k, dim=1)
+    diffs = margin - (pos_scores.unsqueeze(1) - topk_vals)
+    losses = torch.clamp(diffs, min=0.0)
+    return weight * losses.mean()

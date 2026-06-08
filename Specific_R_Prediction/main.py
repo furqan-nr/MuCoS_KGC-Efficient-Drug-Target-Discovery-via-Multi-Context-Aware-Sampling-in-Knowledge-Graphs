@@ -22,7 +22,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using Device: {device}")
 
 if __name__ == '__main__':
-    # Load filtered drug-target triplets
+    # Load benchmark triplets without domain-specific filtering.
     train_triplets = load_triplets(train_file_path)
     valid_triplets = load_triplets(valid_file_path)
     test_triplets  = load_triplets(test_file_path)
@@ -31,12 +31,12 @@ if __name__ == '__main__':
     print("Validation triplets shape:", valid_triplets.shape)
     print("Test triplets shape:", test_triplets.shape)
     
-    # Relation mapping (only from filtered drug-target relations)
+    # Relation mapping from the training split.
     relations = train_triplets['relation'].unique().tolist()
     relation_to_idx = {rel: idx for idx, rel in enumerate(relations)}
     
-    # All triplets (filtered) for neighbor extraction
-    all_triplets = pd.concat([train_triplets, valid_triplets, test_triplets])
+    # Training-only graph context avoids leakage into validation/test.
+    all_triplets = train_triplets
     
     # Get tokenizer and model
     tokenizer_class, model_class = get_tokenizer_and_model_classes(MODEL_NAME)

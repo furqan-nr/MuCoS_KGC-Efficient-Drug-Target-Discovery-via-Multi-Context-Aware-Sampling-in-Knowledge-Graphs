@@ -80,9 +80,22 @@ MAX_LENGTH = 128
 LEARNING_RATE = 5e-5
 NUM_EPOCHS = 1
 MAX_DEGREE = 30
+EARLY_STOPPING_PATIENCE = 3
+EARLY_STOPPING_MIN_DELTA = 0.0
 
 # DDP Communication Port
 MASTER_PORT = "29500"
+
+
+# ==================== HARD NEGATIVE MINING (OPTIONAL) ====================
+# Lightweight hard-negative hinge loss to emphasize top incorrect labels.
+# These settings are conservative defaults—tune per dataset for best results.
+HARD_NEGATIVE_MINING_ENABLED = True
+HNM_POOL_SIZE = 100  # not used in this simple hinge variant, reserved for future
+HNM_TOP_K = 1
+HNM_MARGIN = 0.5
+HNM_WEIGHT = 1.0
+HNM_ENTITY_NEG_K = 1
 
 
 

@@ -3,6 +3,16 @@ import numpy as np
 import torch
 
 
+def _rank_batch(logits, labels):
+    scores = torch.softmax(logits, dim=-1)
+    sorted_indices = torch.argsort(scores, dim=-1, descending=True)
+    ranks = []
+    for row_indices, label in zip(sorted_indices, labels):
+        rank = (row_indices == label).nonzero(as_tuple=False).item() + 1
+        ranks.append(rank)
+    return ranks
+
+
 
 # ==================== EVALUATION FUNCTION ====================
 # This function evaluates a trained relation prediction model on a test dataset.
@@ -26,42 +36,26 @@ def evaluate_relation_model(model, dataloader, device, relation_to_idx, test_tri
     
     eval_model.eval()
     rankings = []
-    labels = []
-    
+
     # Prepare list of all relations for ranking
     all_relations = list(relation_to_idx.keys())
     num_relations = len(all_relations)
     
     with torch.no_grad():
-        for idx in range(len(test_triplets)):
-            row = test_triplets.iloc[idx]
-            head, true_relation, tail = row['head'], row['relation'], row['tail']
-            
-            # Get precomputed neighbor info for head and tail
-            head_context = entity_incoming_neighbors.get(head, [])
-            tail_context = entity_incoming_neighbors.get(tail, [])
-            
-            head_context_str = " ".join(head_context)
-            tail_context_str = " ".join(tail_context)
-            
-            text = f"{head} [SEP] {head_context_str} [SEP] {tail} [SEP] {tail_context_str}"
-            inputs = tokenizer(text, return_tensors="pt", padding="max_length",
-                               truncation=True, max_length=max_length)
-            inputs = {key: val.to(device) for key, val in inputs.items()}
-            
+        for batch in dataloader:
+            # dataloader may yield (inputs, labels) or (inputs, labels, meta)
+            if len(batch) == 2:
+                inputs, labels = batch
+            else:
+                inputs, labels, _meta = batch
+
+            inputs = {key: val.to(device, non_blocking=True) for key, val in inputs.items()}
+            labels = labels.to(device, non_blocking=True)
+
             outputs = eval_model(**inputs)
-            logits = outputs.logits.squeeze().cpu().numpy()
-            scores = np.exp(logits) / np.sum(np.exp(logits))  # softmax
-            
-            # Get rank of true relation
-            true_idx = relation_to_idx[true_relation]
-            # Sort scores descending and find position of true label
-            sorted_indices = np.argsort(scores)[::-1]
-            rank = np.where(sorted_indices == true_idx)[0][0] + 1
-            
-            rankings.append(rank)
-            labels.append(true_idx)
-    
+            logits = outputs.logits
+            rankings.extend(_rank_batch(logits, labels))
+
     rankings = np.array(rankings)
     
     # Calculate metrics
@@ -147,3 +141,25 @@ def load_checkpoint(model, optimizer, checkpoint_path):
         return checkpoint['epoch']
     else:
         return 0
+
+
+def hard_negative_hinge_loss(logits: torch.Tensor, labels: torch.Tensor,
+                             top_k: int = 1, margin: float = 0.5, weight: float = 1.0) -> torch.Tensor:
+    """Compute hinge loss on the hardest incorrect label(s) per sample.
+
+    logits: (batch, num_classes), labels: (batch,)
+    Returns scalar loss.
+    """
+    if top_k <= 0:
+        return torch.tensor(0.0, device=logits.device)
+
+    # copy logits and mask the positive class
+    logits_clone = logits.clone()
+    logits_clone[torch.arange(logits.size(0)), labels] = -1e9
+
+    pos_scores = logits[torch.arange(logits.size(0)), labels]
+    topk_vals, _ = torch.topk(logits_clone, top_k, dim=1)
+    # margin loss: max(0, margin - (pos - neg))
+    diffs = margin - (pos_scores.unsqueeze(1) - topk_vals)
+    losses = torch.clamp(diffs, min=0.0)
+    return weight * losses.mean()
