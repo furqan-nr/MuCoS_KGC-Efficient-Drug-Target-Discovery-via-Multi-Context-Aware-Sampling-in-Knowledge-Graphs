@@ -188,9 +188,9 @@ def train(rank, world_size, dataset_config):
         train_loss = 0.0
         total_batches = len(train_dataloader)
 
-            for batch_idx, (inputs, labels, meta) in enumerate(train_dataloader):
-                inputs = {k: v.to(rank, non_blocking=True) for k, v in inputs.items()}
-                labels = labels.to(rank, non_blocking=True)
+        for batch_idx, (inputs, labels, meta) in enumerate(train_dataloader):
+            inputs = {k: v.to(rank, non_blocking=True) for k, v in inputs.items()}
+            labels = labels.to(rank, non_blocking=True)
 
             # forward to get logits, compute CE loss manually so we can add hinge term
             outputs = model(**inputs)
